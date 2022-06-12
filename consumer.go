@@ -22,13 +22,13 @@ type KafkaConsumer struct {
 	cfg           Config
 	consumerGroup sarama.ConsumerGroup
 	middlewares   []Middleware
-	logger        zap.Logger
+	logger        *zap.Logger
 }
 
 // NewKafkaConsumer instantiate KafkaConsumer.
 func NewKafkaConsumer(
 	cfg Config,
-	logger zap.Logger,
+	logger *zap.Logger,
 	middlewares ...Middleware,
 ) (*KafkaConsumer, error) {
 	sc, err := createSaramaConfig(cfg)
@@ -132,6 +132,9 @@ func (c *KafkaConsumer) Close() error {
 // MessageHandleFunc handles messages.
 type MessageHandleFunc func(ctx context.Context, message Message) error
 
+// Func type is an adapter to allow the use of ordinary functions as Logger.
+func (f MessageHandleFunc) Handle(ctx context.Context, message Message) error { return f(ctx, message) }
+
 // Middleware function.
 type Middleware func(next MessageHandleFunc) MessageHandleFunc
 
@@ -143,10 +146,10 @@ type MessageHandler interface {
 // Wrapper from our domain handlers to sarama ConsumerGroupHandler to avoid abstraction leak.
 type saramaHandler struct {
 	messageHandler MessageHandleFunc
-	logger         zap.Logger
+	logger         *zap.Logger
 }
 
-func newHandler(handler MessageHandler, middlewares []Middleware, logger zap.Logger) *saramaHandler {
+func newHandler(handler MessageHandler, middlewares []Middleware, logger *zap.Logger) *saramaHandler {
 	h := saramaHandler{
 		messageHandler: newMessageHandlerFunc(handler),
 		logger:         logger,

@@ -29,7 +29,7 @@ func NewProducer(cfg Config) (*Producer, error) {
 		cfg:     saramaConfig,
 	}
 
-	saramaProducer, err := sarama.NewSyncProducer(cfg.Brokers, p.cfg)
+	saramaProducer, err := sarama.NewSyncProducer(p.brokers, p.cfg)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}

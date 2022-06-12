@@ -15,28 +15,23 @@ import (
 //TODO: implement error_train
 type ErrorTracker struct {
 	cfg    Config
-	logger zap.Logger
+	logger *zap.Logger
 
 	producer *Producer
 	lm       lockMap
 	registry *HandlerRegistry
 
+	errors chan error
+
 	sync.Mutex
 }
 
-func InitTracker(
-	ctx context.Context,
+func NewTracker(
 	cfg Config,
-	logger zap.Logger,
+	logger *zap.Logger,
 	topic string,
 	registry *HandlerRegistry,
 ) (*ErrorTracker, error) {
-	// init sarama Config and all dependencies for ErrorTracker
-	saramaConfig := sarama.NewConfig()
-	saramaConfig.Producer.Return.Successes = true
-	saramaConfig.Producer.Return.Errors = true
-	saramaConfig.Net.WriteTimeout = 1 * time.Second
-	saramaConfig.Metadata.Retry.Max = 5
 
 	// initialize topic map
 	lm := make(lockMap)
@@ -52,13 +47,24 @@ func InitTracker(
 		logger:   logger,
 		registry: registry,
 		producer: producer,
-		lm:       lm,
+		lm:       make(lockMap),
+		errors:   make(chan error, 256),
 	}
 
+	return &t, nil
+}
+
+func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
+	// init sarama Config and all dependencies for ErrorTracker
+	saramaConfig := sarama.NewConfig()
+	saramaConfig.Producer.Return.Successes = true
+	saramaConfig.Producer.Return.Errors = true
+	saramaConfig.Net.WriteTimeout = 1 * time.Second
+	saramaConfig.Metadata.Retry.Max = 5
 	// Create redirect and retry topics if not exist
-	admin, err := sarama.NewClusterAdmin(cfg.Brokers, saramaConfig)
+	admin, err := sarama.NewClusterAdmin(t.cfg.Brokers, saramaConfig)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return errors.WithStack(err)
 	}
 
 	defer func() { _ = admin.Close() }()
@@ -66,12 +72,16 @@ func InitTracker(
 	var g = errgroup.Group{}
 
 	g.Go(func() error {
-		err := admin.CreateTopic(t.retryTopic(""), &sarama.TopicDetail{
+		err := admin.CreateTopic(t.retryTopic(topic), &sarama.TopicDetail{
 			NumPartitions:     1,
 			ReplicationFactor: 1,
+			ConfigEntries: map[string]*string{
+				"cleanup.policy": toPtr("compact"),
+				"segment.ms":     toPtr("100"),
+			},
 		}, false)
 		if err != nil {
-			sErr, ok := err.(*sarama.TopicError) // nolint: errorlint
+			sErr, ok := err.(*sarama.TopicError)
 
 			if !(ok && sErr.Err == sarama.ErrTopicAlreadyExists) {
 				return errors.WithStack(err)
@@ -82,7 +92,7 @@ func InitTracker(
 	})
 
 	g.Go(func() error {
-		err := admin.CreateTopic(t.redirectTopic(""), &sarama.TopicDetail{
+		err := admin.CreateTopic(t.redirectTopic(topic), &sarama.TopicDetail{
 			NumPartitions:     1,
 			ReplicationFactor: 1,
 			ConfigEntries: map[string]*string{
@@ -103,80 +113,93 @@ func InitTracker(
 
 	err = g.Wait()
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return errors.WithStack(err)
 	}
 
 	// Fill internal store with data from redirect topic
-	cfg2 := cfg
+	cfg2 := t.cfg
 	cfg2.GroupID = uuid.New().String()
-
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
 
 	refillConsumer, err := NewKafkaConsumer(
 		t.cfg,
-		logger,
+		t.logger,
 	)
 
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	//TODO: delete consumer group
 	errCh := make(chan error, 10)
 
 	tctx, cancel := context.WithTimeout(ctx, time.Second*5)
 	defer cancel()
 
 	go func() {
-		errCh <- refillConsumer.Consume(tctx, t.redirectTopic(""), NewRedirectFillHandler(&t))
+		errCh <- refillConsumer.Consume(tctx, t.redirectTopic(topic), newRedirectFillHandler(t))
 	}()
 
 	<-tctx.Done()
 
 	if err := refillConsumer.Close(); err != nil {
-		return nil, errors.WithStack(err)
+		return errors.WithStack(err)
+	}
+
+	err = admin.DeleteConsumerGroup(cfg2.GroupID)
+	if err != nil {
+		return errors.WithStack(err)
 	}
 
 	// start retry consumer
 	// try to handle events from this topic in the same order they were received
 	// if message was handled successfully publish tombstone event to redirect topic
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
 
 	retryConsumer, err := NewKafkaConsumer(
 		t.cfg,
-		logger,
-		NewRetryMiddleware(&t),
+		t.logger,
+		NewRetryMiddleware(t),
 	)
 
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
 	go func() {
-		handler, _ := t.registry.Get("")
+		handler, _ := t.registry.Get(topic)
 		errCh <- retryConsumer.Consume(ctx, t.retryTopic(""), handler)
 	}()
 
 	//consumerGroup2, err := NewConsumerGroup(t.cfg)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
+
 	// start redirect consumer
 	// listen for tombstone events and remove successfully handled messages from in memory store
 	//TODO
 	redirectConsumer, err := NewKafkaConsumer(
 		t.cfg,
-		logger,
+		t.logger,
 	)
 
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
 	go func() {
-		errCh <- redirectConsumer.Consume(ctx, t.redirectTopic(""), NewRedirectHandler(&t))
+		errCh <- redirectConsumer.Consume(ctx, t.redirectTopic(topic), NewRedirectHandler(t))
 	}()
 
 	go func() {
 		for err := range errCh {
 			if err != nil {
-				logger.Error("error", zap.Error(err))
+				t.errors <- err
+				t.logger.Error("error", zap.Error(err))
 			}
 		}
 	}()
 
-	return &t, nil
+	return nil
+}
+func (t *ErrorTracker) Errors() <-chan error {
+	return t.errors
 }
 
 func (t *ErrorTracker) IsRelated(topic string, key []byte) bool {
@@ -325,15 +348,15 @@ func (t *ErrorTracker) redirectTopic(topic string) string {
 	return t.cfg.RedirectTopicPrefix + "_" + topic
 }
 
-type RedirectFillHandler struct {
+type redirectFillHandler struct {
 	t *ErrorTracker
 }
 
-func NewRedirectFillHandler(t *ErrorTracker) *RedirectFillHandler {
-	return &RedirectFillHandler{t: t}
+func newRedirectFillHandler(t *ErrorTracker) *redirectFillHandler {
+	return &redirectFillHandler{t: t}
 }
 
-func (r RedirectFillHandler) Handle(ctx context.Context, msg Message) error {
+func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
 	// no payload means tombstone event
 	if msg.Payload == nil {
 		return nil
@@ -388,9 +411,6 @@ func (e RetriableError) Error() string {
 func (e RetriableError) ShouldRetry() bool {
 	return e.retry
 }
-
-// topic map ['topic-name' => ['topic-key' => ['id1', 'id2', 'id3'], 'topic-key-2' => ['id4', 'id5', 'id6']]].
-type lockMap map[string]map[string][]string
 
 func remove(s []string, r string) []string {
 	for i, v := range s {
