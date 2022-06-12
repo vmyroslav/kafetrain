@@ -3,15 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/Shopify/sarama"
+	"github.com/vmyroslav/kafetrain/example/pkg/logging"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 
-	"github.com/Shopify/sarama"
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/vmyroslav/kafetrain"
-	"github.com/vmyroslav/kafetrain/pkg/logging"
 	"go.uber.org/zap"
 )
 
@@ -25,22 +25,18 @@ func main() {
 		panic(fmt.Errorf("could not load config: %w", err))
 	}
 
-	logger, err := zap.NewDevelopment()
-	if err != nil {
-		panic(fmt.Errorf("could not load config: %w", err))
-	}
+	logger := logging.New(cfg.LoggerConfig)
+	sarama.Logger = logging.NewSaramaAdapter(logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sarama.Logger = logging.NewSaramaAdapter(logger)
-
 	registry := kafetrain.NewHandlerRegistry()
-	//TODO: add handlers
+	registry.Add(cfg.Topic, NewHandlerExample(logger))
 
-	t, err := kafetrain.NewTracker(cfg.KafkaConfig, logger, "topic", registry)
+	t, err := kafetrain.NewTracker(cfg.KafkaConfig, logger, cfg.Topic, registry)
 	if err != nil {
-		panic(fmt.Errorf("could not start error handler: %w", err))
+		logger.Fatal("could not start error tracker", zap.Error(err))
 	}
 
 	kafkaConsumer, err := kafetrain.NewKafkaConsumer(

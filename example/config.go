@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/vmyroslav/kafetrain"
+	"github.com/vmyroslav/kafetrain/example/pkg/logging"
 )
 
-// Config is the configuration for the logger.
 type Config struct {
 	Topic string `envconfig:"KAFKA_TOPIC" required:"true"`
 
 	KafkaConfig  kafetrain.Config
-	LoggerConfig kafetrain.Config
+	LoggerConfig logging.Config
 }
 
 func NewConfig() (*Config, error) {
