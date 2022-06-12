@@ -1,0 +1,71 @@
+version: '3.9'
+
+services:
+  consumer:
+    build:
+      context: ./
+      dockerfile: ./Dockerfile
+    entrypoint: CompileDaemon -log-prefix=false -graceful-timeout=10 -graceful-kill=true -build="make build-example" -command="./dist/app"
+    volumes:
+      - ./:/app
+    networks:
+      - kafetrain
+    depends_on:
+      kafka:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BROKERS: '${KAFKA_BROKERS:-kafka:9092}'
+      KAFKA_VERSION: "3.0.1"
+      KAFKA_TOPIC: '${KAFKA_TOPIC:-kafetrain_example}'
+      KAFKA_GROUP_ID: '${KAFKA_GROUP_ID:-kafetrain}'
+
+  zookeeper:
+    image: "confluentinc/cp-zookeeper:5.2.1"
+    ports:
+      - '${ZOOKEEPER_FORWARD_PORT:-2181}:2181'
+    networks:
+      - kafetrain
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-kafka:7.0.1
+    ports:
+      - '${KAFKA_PORT:-9092}:9092'
+      - '29092:29092'
+    depends_on:
+      - zookeeper
+    networks:
+      - kafetrain
+    restart: on-failure
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: LISTENER_INTERNAL_TRAFFIC://kafka:29092,LISTENER_DOCKER_HOST://kafka:9092,LISTENER_OUTSIDE_TRAFFIC://kafka:29094
+      KAFKA_ADVERTISED_LISTENERS: LISTENER_INTERNAL_TRAFFIC://kafka:29092,LISTENER_DOCKER_HOST://localhost:9092,LISTENER_OUTSIDE_TRAFFIC://dns-for-traffic-from-outside:29094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: LISTENER_INTERNAL_TRAFFIC:PLAINTEXT,LISTENER_DOCKER_HOST:PLAINTEXT,LISTENER_OUTSIDE_TRAFFIC:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: LISTENER_INTERNAL_TRAFFIC
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 100
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_NUM_PARTITIONS: '${KAFKA_NUM_PARTITIONS:-3}'
+    healthcheck:
+      test: [ "CMD", "nc", "-vz", "kafka", "29092" ]
+      interval: 1s
+      start_period: 60s
+      timeout: 60s
+
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.0.1
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - kafetrain
+    command: "bash -c 'echo Waiting for Kafka to be ready... && \
+      cub kafka-ready -b kafka:29092 1 60 && exit $$?'"
+
+networks:
+  kafetrain:
+    driver: bridge

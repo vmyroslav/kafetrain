@@ -14,7 +14,7 @@ type Producer struct {
 	cfg            *sarama.Config
 }
 
-var topicAlreadyExists = errors.New("topic already exists")
+var errTopicAlreadyExists = errors.New("topic already exists")
 
 // NewProducer creates a new instance of Producer.
 func NewProducer(cfg Config) (*Producer, error) {
@@ -76,7 +76,7 @@ func (p *Producer) CreateTopic(topic string) error {
 		sErr, ok := err.(*sarama.TopicError)
 
 		if !(ok && sErr.Err == sarama.ErrTopicAlreadyExists) {
-			return topicAlreadyExists
+			return errTopicAlreadyExists
 		}
 
 		return errors.WithStack(err)

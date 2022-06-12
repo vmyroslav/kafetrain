@@ -6,7 +6,7 @@ type Config struct {
 	Version string   `envconfig:"KAFKA_VERSION" required:"true"`
 	//Topic    string   `envconfig:"KAFKA_TOPIC" required:"true"`
 	GroupID  string `envconfig:"KAFKA_GROUP_ID" required:"true"`
-	ClientID string `envconfig:"KAFKA_CLIENT_ID" default:"codc-consumer"`
+	ClientID string `envconfig:"KAFKA_CLIENT_ID" default:"kafetrain-consumer"`
 
 	// Security configuration.
 	Username string `envconfig:"KAFKA_USERNAME"`
