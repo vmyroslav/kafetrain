@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/Shopify/sarama"
 	"github.com/vmyroslav/kafetrain/example/pkg/logging"
 	"os"
 	"os/signal"
@@ -26,7 +25,6 @@ func main() {
 	}
 
 	logger := logging.New(cfg.LoggerConfig)
-	sarama.Logger = logging.NewSaramaAdapter(logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -34,7 +32,7 @@ func main() {
 	registry := kafetrain.NewHandlerRegistry()
 	registry.Add(cfg.Topic, NewHandlerExample(logger))
 
-	t, err := kafetrain.NewTracker(cfg.KafkaConfig, logger, cfg.Topic, registry)
+	t, err := kafetrain.NewTracker(cfg.KafkaConfig, logger, kafetrain.NewKeyComparator(cfg.Topic), registry)
 	if err != nil {
 		logger.Fatal("could not start error tracker", zap.Error(err))
 	}

@@ -11,6 +11,11 @@ WARN_COLOR=\033[33;01m
 test:
 	@$(GO) test -race
 
+up:
+	docker-compose -f ./example/docker-compose.yml up -d
+
+down:
+	docker-compose -f ./example/docker-compose.yml down
 
 build-example:
 	@echo "$(OK_COLOR)==> Building... $(NO_COLOR)"

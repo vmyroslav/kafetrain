@@ -2,6 +2,7 @@ package kafetrain
 
 import (
 	"context"
+	"fmt"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"sync"
@@ -17,9 +18,10 @@ type ErrorTracker struct {
 	cfg    Config
 	logger *zap.Logger
 
-	producer *Producer
-	lm       lockMap
-	registry *HandlerRegistry
+	producer   *producer
+	comparator Comparator
+	lm         lockMap
+	registry   *HandlerRegistry
 
 	errors chan error
 
@@ -29,26 +31,26 @@ type ErrorTracker struct {
 func NewTracker(
 	cfg Config,
 	logger *zap.Logger,
-	topic string,
+	comparator Comparator,
 	registry *HandlerRegistry,
 ) (*ErrorTracker, error) {
+	if comparator == nil {
+		comparator = NewKeyComparator("")
+	}
 
-	// initialize topic map
-	lm := make(lockMap)
-	lm[topic] = make(map[string][]string)
-
-	producer, err := NewProducer(cfg)
+	producer, err := newProducer(cfg)
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
 
 	t := ErrorTracker{
-		cfg:      cfg,
-		logger:   logger,
-		registry: registry,
-		producer: producer,
-		lm:       make(lockMap),
-		errors:   make(chan error, 256),
+		cfg:        cfg,
+		logger:     logger,
+		registry:   registry,
+		producer:   producer,
+		lm:         make(lockMap),
+		comparator: comparator,
+		errors:     make(chan error, 256),
 	}
 
 	return &t, nil
@@ -73,7 +75,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 
 	g.Go(func() error {
 		err := admin.CreateTopic(t.retryTopic(topic), &sarama.TopicDetail{
-			NumPartitions:     1,
+			NumPartitions:     1, //TODO: configurable
 			ReplicationFactor: 1,
 			ConfigEntries: map[string]*string{
 				"cleanup.policy": toPtr("compact"),
@@ -93,7 +95,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 
 	g.Go(func() error {
 		err := admin.CreateTopic(t.redirectTopic(topic), &sarama.TopicDetail{
-			NumPartitions:     1,
+			NumPartitions:     1, //TODO: configurable
 			ReplicationFactor: 1,
 			ConfigEntries: map[string]*string{
 				"cleanup.policy": toPtr("compact"),
@@ -117,6 +119,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 	}
 
 	// Fill internal store with data from redirect topic
+	//TODO: implement later
 	cfg2 := t.cfg
 	cfg2.GroupID = uuid.New().String()
 
@@ -153,7 +156,6 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 	// start retry consumer
 	// try to handle events from this topic in the same order they were received
 	// if message was handled successfully publish tombstone event to redirect topic
-
 	retryConsumer, err := NewKafkaConsumer(
 		t.cfg,
 		t.logger,
@@ -164,12 +166,14 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 		return errors.WithStack(err)
 	}
 
-	go func() {
-		handler, _ := t.registry.Get(topic)
-		errCh <- retryConsumer.Consume(ctx, t.retryTopic(""), handler)
-	}()
+	handler, ok := t.registry.Get(topic)
+	if !ok || handler == nil {
+		return errors.New(fmt.Sprintf("handler for topic: %s not found", topic))
+	}
 
-	//consumerGroup2, err := NewConsumerGroup(t.cfg)
+	go func() {
+		errCh <- retryConsumer.Consume(ctx, t.retryTopic(topic), handler)
+	}()
 
 	// start redirect consumer
 	// listen for tombstone events and remove successfully handled messages from in memory store
@@ -202,12 +206,8 @@ func (t *ErrorTracker) Errors() <-chan error {
 	return t.errors
 }
 
-func (t *ErrorTracker) IsRelated(topic string, key []byte) bool {
-	if _, ok := t.lm[topic][string(key)]; ok {
-		return true
-	}
-
-	return false
+func (t *ErrorTracker) IsRelated(topic string, msg Message) bool {
+	return t.comparator.IsRelated(topic, msg)
 }
 
 func (t *ErrorTracker) Redirect(ctx context.Context, m Message) error {
@@ -236,7 +236,7 @@ func (t *ErrorTracker) Redirect(ctx context.Context, m Message) error {
 			},
 		}
 
-		return t.producer.Publish(ctx, newMessage)
+		return t.producer.publish(ctx, newMessage)
 	})
 
 	g.Go(func() error {
@@ -256,7 +256,7 @@ func (t *ErrorTracker) Redirect(ctx context.Context, m Message) error {
 			},
 		}
 
-		return t.producer.Publish(ctx, newMessage)
+		return t.producer.publish(ctx, newMessage)
 	})
 
 	if err := g.Wait(); err != nil {
@@ -312,7 +312,7 @@ func (t *ErrorTracker) Free(ctx context.Context, m Message) error {
 		},
 	}
 
-	return t.producer.Publish(ctx, newMessage)
+	return t.producer.publish(ctx, newMessage)
 }
 
 func (t *ErrorTracker) ReleaseMessage(_ context.Context, m Message) error {

@@ -41,8 +41,6 @@ func NewKafkaConsumer(
 		return nil, errors.Wrapf(err, "unable to create sarama consumer group")
 	}
 
-	//return cg, nil
-
 	return &KafkaConsumer{
 		cfg:           cfg,
 		consumerGroup: cg,

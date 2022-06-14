@@ -1,24 +1,6 @@
 version: '3.9'
 
 services:
-  consumer:
-    build:
-      context: ./
-      dockerfile: ./Dockerfile
-    entrypoint: CompileDaemon -log-prefix=false -graceful-timeout=10 -graceful-kill=true -build="make build-example" -command="./dist/app"
-    volumes:
-      - ./:/app
-    networks:
-      - kafetrain
-    depends_on:
-      kafka:
-        condition: service_completed_successfully
-    environment:
-      KAFKA_BROKERS: '${KAFKA_BROKERS:-kafka:9092}'
-      KAFKA_VERSION: "3.0.1"
-      KAFKA_TOPIC: '${KAFKA_TOPIC:-kafetrain_example}'
-      KAFKA_GROUP_ID: '${KAFKA_GROUP_ID:-kafetrain}'
-
   zookeeper:
     image: "confluentinc/cp-zookeeper:5.2.1"
     ports:

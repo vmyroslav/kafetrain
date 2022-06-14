@@ -36,20 +36,20 @@ func NewLoggingMiddleware(logger *zap.Logger) Middleware {
 // NewErrorHandlingMiddleware track message processing time.
 func NewErrorHandlingMiddleware(t *ErrorTracker) Middleware {
 	return func(next MessageHandleFunc) MessageHandleFunc {
-		return func(ctx context.Context, message Message) error {
-			if t.IsRelated(message.topic, message.Key) {
-				if err := t.Redirect(ctx, message); err != nil {
-					return errors.Wrap(err, "failed to redirect message")
+		return func(ctx context.Context, msg Message) error {
+			if t.IsRelated(msg.topic, msg) {
+				if err := t.Redirect(ctx, msg); err != nil {
+					return errors.Wrap(err, "failed to redirect msg")
 				}
 
 				return nil
 			}
 
-			if err := next(ctx, message); err != nil {
-				var e *RetriableError
+			if err := next(ctx, msg); err != nil {
+				var e RetriableError
 				if errors.As(err, &e) {
-					if err := t.Redirect(ctx, message); err != nil {
-						return errors.Wrap(err, "failed to redirect message")
+					if err := t.Redirect(ctx, msg); err != nil {
+						return errors.Wrap(err, "failed to redirect msg")
 					}
 
 					return nil

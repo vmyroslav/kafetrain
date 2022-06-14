@@ -8,23 +8,20 @@ import (
 	"github.com/pkg/errors"
 )
 
-type Producer struct {
+type producer struct {
 	brokers        []string
 	saramaProducer sarama.SyncProducer
 	cfg            *sarama.Config
 }
 
-var errTopicAlreadyExists = errors.New("topic already exists")
-
-// NewProducer creates a new instance of Producer.
-func NewProducer(cfg Config) (*Producer, error) {
+func newProducer(cfg Config) (*producer, error) {
 	saramaConfig := sarama.NewConfig()
 	saramaConfig.Producer.Return.Successes = true
 	saramaConfig.Producer.Return.Errors = true
 	saramaConfig.Net.WriteTimeout = 1 * time.Second
 	saramaConfig.Metadata.Retry.Max = 5
 
-	p := Producer{
+	p := producer{
 		brokers: cfg.Brokers,
 		cfg:     saramaConfig,
 	}
@@ -39,7 +36,9 @@ func NewProducer(cfg Config) (*Producer, error) {
 	return &p, nil
 }
 
-func (p *Producer) Publish(_ context.Context, msg Message) error {
+var errTopicAlreadyExists = errors.New("topic already exists")
+
+func (p *producer) publish(_ context.Context, msg Message) error {
 	var sh []sarama.RecordHeader
 	for _, v := range msg.Headers {
 		sh = append(sh, sarama.RecordHeader{
@@ -60,7 +59,7 @@ func (p *Producer) Publish(_ context.Context, msg Message) error {
 	return errors.WithStack(err)
 }
 
-func (p *Producer) CreateTopic(topic string) error {
+func (p *producer) CreateTopic(topic string) error {
 	admin, err := sarama.NewClusterAdmin(p.brokers, p.cfg)
 	if err != nil {
 		return errors.WithStack(err)

@@ -4,7 +4,7 @@ package logging
 import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"io"
+	"os"
 )
 
 // New initiates a new logger.
@@ -12,10 +12,10 @@ func New(cfg Config) *zap.Logger {
 	zcfg := zap.NewProductionConfig()
 	core := zapcore.NewCore(
 		zapcore.NewJSONEncoder(zcfg.EncoderConfig),
-		zapcore.AddSync(io.Discard),
+		zapcore.AddSync(os.Stdout),
 		cfg.Level,
 	)
-	logger := zap.New(core)
+	logger := zap.New(core, zap.AddCaller())
 
 	return logger
 }
