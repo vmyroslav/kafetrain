@@ -2,7 +2,6 @@ package kafetrain
 
 import (
 	"context"
-	"fmt"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"sync"
@@ -120,85 +119,85 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 
 	// Fill internal store with data from redirect topic
 	//TODO: implement later
-	cfg2 := t.cfg
-	cfg2.GroupID = uuid.New().String()
-
-	refillConsumer, err := NewKafkaConsumer(
-		t.cfg,
-		t.logger,
-	)
-
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	//TODO: delete consumer group
-	errCh := make(chan error, 10)
-
-	tctx, cancel := context.WithTimeout(ctx, time.Second*5)
-	defer cancel()
-
-	go func() {
-		errCh <- refillConsumer.Consume(tctx, t.redirectTopic(topic), newRedirectFillHandler(t))
-	}()
-
-	<-tctx.Done()
-
-	if err := refillConsumer.Close(); err != nil {
-		return errors.WithStack(err)
-	}
-
-	err = admin.DeleteConsumerGroup(cfg2.GroupID)
-	if err != nil {
-		return errors.WithStack(err)
-	}
+	//cfg2 := t.cfg
+	//cfg2.GroupID = uuid.New().String()
+	//
+	//refillConsumer, err := NewKafkaConsumer(
+	//	t.cfg,
+	//	t.logger,
+	//)
+	//
+	//if err != nil {
+	//	return errors.WithStack(err)
+	//}
+	//
+	////TODO: delete consumer group
+	//errCh := make(chan error, 10)
+	//
+	//tctx, cancel := context.WithTimeout(ctx, time.Second*5)
+	//defer cancel()
+	//
+	//go func() {
+	//	errCh <- refillConsumer.Consume(tctx, t.redirectTopic(topic), newRedirectFillHandler(t))
+	//}()
+	//
+	//<-tctx.Done()
+	//
+	//if err := refillConsumer.Close(); err != nil {
+	//	return errors.WithStack(err)
+	//}
+	//
+	//err = admin.DeleteConsumerGroup(cfg2.GroupID)
+	//if err != nil {
+	//	return errors.WithStack(err)
+	//}
 
 	// start retry consumer
 	// try to handle events from this topic in the same order they were received
 	// if message was handled successfully publish tombstone event to redirect topic
-	retryConsumer, err := NewKafkaConsumer(
-		t.cfg,
-		t.logger,
-		NewRetryMiddleware(t),
-	)
-
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	handler, ok := t.registry.Get(topic)
-	if !ok || handler == nil {
-		return errors.New(fmt.Sprintf("handler for topic: %s not found", topic))
-	}
-
-	go func() {
-		errCh <- retryConsumer.Consume(ctx, t.retryTopic(topic), handler)
-	}()
-
-	// start redirect consumer
-	// listen for tombstone events and remove successfully handled messages from in memory store
-	//TODO
-	redirectConsumer, err := NewKafkaConsumer(
-		t.cfg,
-		t.logger,
-	)
-
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	go func() {
-		errCh <- redirectConsumer.Consume(ctx, t.redirectTopic(topic), NewRedirectHandler(t))
-	}()
-
-	go func() {
-		for err := range errCh {
-			if err != nil {
-				t.errors <- err
-				t.logger.Error("error", zap.Error(err))
-			}
-		}
-	}()
+	//retryConsumer, err := NewKafkaConsumer(
+	//	t.cfg,
+	//	t.logger,
+	//	NewRetryMiddleware(t),
+	//)
+	//
+	//if err != nil {
+	//	return errors.WithStack(err)
+	//}
+	//
+	//handler, ok := t.registry.Get(topic)
+	//if !ok || handler == nil {
+	//	return errors.New(fmt.Sprintf("handler for topic: %s not found", topic))
+	//}
+	//
+	//go func() {
+	//	errCh <- retryConsumer.Consume(ctx, t.retryTopic(topic), handler)
+	//}()
+	//
+	//// start redirect consumer
+	//// listen for tombstone events and remove successfully handled messages from in memory store
+	////TODO
+	//redirectConsumer, err := NewKafkaConsumer(
+	//	t.cfg,
+	//	t.logger,
+	//)
+	//
+	//if err != nil {
+	//	return errors.WithStack(err)
+	//}
+	//
+	//go func() {
+	//	errCh <- redirectConsumer.Consume(ctx, t.redirectTopic(topic), NewRedirectHandler(t))
+	//}()
+	//
+	//go func() {
+	//	for err := range errCh {
+	//		if err != nil {
+	//			t.errors <- err
+	//			t.logger.Error("error", zap.Error(err))
+	//		}
+	//	}
+	//}()
 
 	return nil
 }

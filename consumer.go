@@ -19,13 +19,13 @@ type Consumer interface {
 
 // KafkaConsumer consumes topic.
 type KafkaConsumer struct {
-	cfg           Config
+	cfg    Config
+	logger *zap.Logger
+
 	consumerGroup sarama.ConsumerGroup
 	middlewares   []Middleware
-	logger        *zap.Logger
 }
 
-// NewKafkaConsumer instantiate KafkaConsumer.
 func NewKafkaConsumer(
 	cfg Config,
 	logger *zap.Logger,
@@ -54,7 +54,7 @@ func createSaramaConfig(config Config) (*sarama.Config, error) {
 
 	v, err := sarama.ParseKafkaVersion(config.Version)
 	if err != nil {
-		return nil, errors.Wrapf(err, "unable to parse Kafka version")
+		return nil, errors.Wrapf(err, "unable to parse Kafka version: %s", config.Version)
 	}
 
 	c.Version = v

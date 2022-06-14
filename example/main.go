@@ -42,7 +42,7 @@ func main() {
 		logger,
 		kafetrain.NewLoggingMiddleware(logger),
 		kafetrain.NewErrorHandlingMiddleware(t),
-		kafetrain.NewRetryMiddleware(t),
+		//kafetrain.NewRetryMiddleware(t),
 	)
 
 	if err != nil {

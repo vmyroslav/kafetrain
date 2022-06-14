@@ -15,7 +15,11 @@ func NewHandlerExample(logger *zap.Logger) *HandlerExample {
 }
 
 func (h *HandlerExample) Handle(ctx context.Context, msg kafetrain.Message) error {
-	h.logger.Info("handle", zap.String("msg", string(msg.Key)))
+	h.logger.Info(
+		"handle",
+		zap.String("key", string(msg.Key)),
+		zap.String("payload", string(msg.Payload)),
+	)
 
 	return nil
 }

@@ -14,17 +14,14 @@ func NewLoggingMiddleware(logger *zap.Logger) Middleware {
 		return func(ctx context.Context, message Message) error {
 			start := time.Now()
 
-			logger.With(
-				zap.String("topic", message.topic),
-				zap.Int32("partition", message.partition),
-				zap.Int64("offset", message.offset),
-			)
-
 			if err := next(ctx, message); err != nil {
 				return err
 			}
 
 			logger.Info("message handled",
+				zap.String("topic", message.topic),
+				zap.Int32("partition", message.partition),
+				zap.Int64("offset", message.offset),
 				zap.Duration("duration", time.Since(start)),
 			)
 
