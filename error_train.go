@@ -34,7 +34,7 @@ func NewTracker(
 	registry *HandlerRegistry,
 ) (*ErrorTracker, error) {
 	if comparator == nil {
-		comparator = NewKeyComparator("")
+		comparator = NewKeyComparator()
 	}
 
 	producer, err := newProducer(cfg)
@@ -206,51 +206,47 @@ func (t *ErrorTracker) Errors() <-chan error {
 }
 
 func (t *ErrorTracker) IsRelated(topic string, msg Message) bool {
-	return t.comparator.IsRelated(topic, msg)
+	return t.comparator.IsRelated(topic, &msg)
 }
 
-func (t *ErrorTracker) Redirect(ctx context.Context, m Message) error {
+func (t *ErrorTracker) Redirect(ctx context.Context, msg Message) error {
 	g, ctx := errgroup.WithContext(ctx)
 
 	id := uuid.New().String()
 
-	t.Lock()
-	t.lm[m.topic][string(m.Key)] = append(t.lm[m.topic][string(m.Key)], id)
-	t.Unlock()
+	if err := t.comparator.AddMessage(ctx, &msg, id); err != nil {
+		return errors.WithStack(err)
+	}
 
 	g.Go(func() error {
-		newMessage := Message{
-			topic:   t.retryTopic(""),
-			Key:     m.Key,
-			Payload: m.Payload,
+		retryMsg := Message{
+			topic:   t.retryTopic(msg.topic),
+			Key:     msg.Key,
+			Payload: msg.Payload,
 			Headers: HeaderList{
 				{
 					Key:   []byte("id"),
 					Value: []byte(id),
 				},
-				{
-					Key:   []byte("retry"),
-					Value: []byte("true"),
-				},
 			},
 		}
 
-		return t.producer.publish(ctx, newMessage)
+		return t.producer.publish(ctx, retryMsg)
 	})
 
 	g.Go(func() error {
 		newMessage := Message{
-			topic:   t.redirectTopic(""),
+			topic:   t.redirectTopic(msg.topic),
 			Key:     []byte(id),
 			Payload: []byte(id),
 			Headers: HeaderList{
 				{
 					Key:   []byte("topic"),
-					Value: []byte(m.topic),
+					Value: []byte(msg.topic),
 				},
 				{
 					Key:   []byte("key"),
-					Value: m.Key,
+					Value: msg.Key,
 				},
 			},
 		}
