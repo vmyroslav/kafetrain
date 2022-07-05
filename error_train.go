@@ -18,7 +18,7 @@ type ErrorTracker struct {
 	logger *zap.Logger
 
 	producer   *producer
-	comparator Comparator
+	comparator MessageChainTracker
 	lm         lockMap
 	registry   *HandlerRegistry
 
@@ -30,7 +30,7 @@ type ErrorTracker struct {
 func NewTracker(
 	cfg Config,
 	logger *zap.Logger,
-	comparator Comparator,
+	comparator MessageChainTracker,
 	registry *HandlerRegistry,
 ) (*ErrorTracker, error) {
 	if comparator == nil {
@@ -62,7 +62,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 	saramaConfig.Producer.Return.Errors = true
 	saramaConfig.Net.WriteTimeout = 1 * time.Second
 	saramaConfig.Metadata.Retry.Max = 5
-	// Create redirect and retry topics if not exist
+	// Create redirect and Retry topics if not exist
 	admin, err := sarama.NewClusterAdmin(t.cfg.Brokers, saramaConfig)
 	if err != nil {
 		return errors.WithStack(err)
@@ -152,7 +152,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 	//	return errors.WithStack(err)
 	//}
 
-	// start retry consumer
+	// start Retry consumer
 	// try to handle events from this topic in the same order they were received
 	// if message was handled successfully publish tombstone event to redirect topic
 	//retryConsumer, err := NewKafkaConsumer(
@@ -206,17 +206,13 @@ func (t *ErrorTracker) Errors() <-chan error {
 }
 
 func (t *ErrorTracker) IsRelated(topic string, msg Message) bool {
-	return t.comparator.IsRelated(topic, &msg)
+	return t.comparator.IsRelated(context.Background(), msg)
 }
 
 func (t *ErrorTracker) Redirect(ctx context.Context, msg Message) error {
 	g, ctx := errgroup.WithContext(ctx)
 
 	id := uuid.New().String()
-
-	if err := t.comparator.AddMessage(ctx, &msg, id); err != nil {
-		return errors.WithStack(err)
-	}
 
 	g.Go(func() error {
 		retryMsg := Message{
@@ -255,6 +251,10 @@ func (t *ErrorTracker) Redirect(ctx context.Context, msg Message) error {
 	})
 
 	if err := g.Wait(); err != nil {
+		return errors.WithStack(err)
+	}
+
+	if err := t.comparator.AddMessage(ctx, msg); err != nil {
 		return errors.WithStack(err)
 	}
 
@@ -391,20 +391,20 @@ func toPtr(s string) *string {
 }
 
 type RetriableError struct {
-	origin error
-	retry  bool
+	Origin error
+	Retry  bool
 }
 
 func NewRetriableError(origin error, retry bool) *RetriableError {
-	return &RetriableError{origin: origin, retry: retry}
+	return &RetriableError{Origin: origin, Retry: retry}
 }
 
 func (e RetriableError) Error() string {
-	return e.origin.Error()
+	return e.Origin.Error()
 }
 
 func (e RetriableError) ShouldRetry() bool {
-	return e.retry
+	return e.Retry
 }
 
 func remove(s []string, r string) []string {

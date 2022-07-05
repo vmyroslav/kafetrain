@@ -18,6 +18,6 @@ type Config struct {
 	InitialOffset     int64  `envconfig:"KAFKA_CONSUMER_INITIAL_OFFSET" default:"-2"`
 
 	// Retry configuration.
-	RetryTopicPrefix    string `envconfig:"KAFKA_RETRY_TOPIC_PREFIX" default:"retry"`       // topic for messages to retry
+	RetryTopicPrefix    string `envconfig:"KAFKA_RETRY_TOPIC_PREFIX" default:"Retry"`       // topic for messages to Retry
 	RedirectTopicPrefix string `envconfig:"KAFKA_REDIRECT_TOPIC_PREFIX" default:"redirect"` // topic with message ids that should be retried
 }

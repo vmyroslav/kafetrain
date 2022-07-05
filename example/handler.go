@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"github.com/pkg/errors"
 	"github.com/vmyroslav/kafetrain"
 	"go.uber.org/zap"
 )
@@ -21,5 +22,8 @@ func (h *HandlerExample) Handle(ctx context.Context, msg kafetrain.Message) erro
 		zap.String("payload", string(msg.Payload)),
 	)
 
-	return nil
+	return kafetrain.RetriableError{
+		Origin: errors.New("error"),
+		Retry:  true,
+	}
 }

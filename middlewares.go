@@ -3,6 +3,7 @@ package kafetrain
 import (
 	"context"
 	"go.uber.org/zap"
+	"log"
 	"time"
 
 	"github.com/pkg/errors"
@@ -35,6 +36,7 @@ func NewErrorHandlingMiddleware(t *ErrorTracker) Middleware {
 	return func(next MessageHandleFunc) MessageHandleFunc {
 		return func(ctx context.Context, msg Message) error {
 			if t.IsRelated(msg.topic, msg) {
+				log.Println("related msg")
 				if err := t.Redirect(ctx, msg); err != nil {
 					return errors.Wrap(err, "failed to redirect msg")
 				}

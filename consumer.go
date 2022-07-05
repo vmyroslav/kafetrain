@@ -130,7 +130,7 @@ func (c *KafkaConsumer) Close() error {
 // MessageHandleFunc handles messages.
 type MessageHandleFunc func(ctx context.Context, message Message) error
 
-// MessageHandleFunc type is an adapter to allow the use of ordinary functions as MessageHandler.
+// Handle type is an adapter to allow the use of ordinary functions as MessageHandler.
 func (f MessageHandleFunc) Handle(ctx context.Context, message Message) error { return f(ctx, message) }
 
 // Middleware function.
