@@ -97,7 +97,7 @@ func createSaramaConfig(config Config) (*sarama.Config, error) {
 
 // Consume consume messages from kafka.
 func (c KafkaConsumer) Consume(ctx context.Context, topic string, messageHandler MessageHandler) error {
-	handler := newHandler(messageHandler, c.middlewares, c.logger)
+	handler := newHandler(messageHandler, c.middlewares, c.logger, !c.cfg.Silent)
 	c.logger.Info("started consuming")
 
 	// Consume errors
@@ -145,12 +145,15 @@ type MessageHandler interface {
 type saramaHandler struct {
 	messageHandler MessageHandleFunc
 	logger         *zap.Logger
+
+	shouldCommit bool
 }
 
-func newHandler(handler MessageHandler, middlewares []Middleware, logger *zap.Logger) *saramaHandler {
+func newHandler(handler MessageHandler, middlewares []Middleware, logger *zap.Logger, commit bool) *saramaHandler {
 	h := saramaHandler{
 		messageHandler: newMessageHandlerFunc(handler),
 		logger:         logger,
+		shouldCommit:   commit,
 	}
 
 	for i := len(middlewares) - 1; i >= 0; i-- {
@@ -193,7 +196,9 @@ func (h *saramaHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim 
 			return errors.WithStack(err)
 		}
 
-		session.MarkMessage(message, "") // mark message as processed (not an offset commit)
+		if h.shouldCommit {
+			session.MarkMessage(message, "") // mark message as processed (not an offset commit)
+		}
 	}
 
 	return nil

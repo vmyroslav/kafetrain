@@ -2,14 +2,22 @@ package kafetrain
 
 import (
 	"context"
-	"github.com/google/uuid"
+	"fmt"
 	"go.uber.org/zap"
+	"log"
 	"sync"
 	"time"
 
 	"github.com/Shopify/sarama"
 	"github.com/pkg/errors"
 	"golang.org/x/sync/errgroup"
+)
+
+const (
+	HeaderTopic = "topic"
+	headerID    = "id"
+	headerRetry = "retry"
+	headerKey   = "key"
 )
 
 //TODO: implement error_train
@@ -34,7 +42,7 @@ func NewTracker(
 	registry *HandlerRegistry,
 ) (*ErrorTracker, error) {
 	if comparator == nil {
-		comparator = NewKeyComparator()
+		comparator = NewKeyTracker()
 	}
 
 	producer, err := newProducer(cfg)
@@ -155,40 +163,46 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 	// start Retry consumer
 	// try to handle events from this topic in the same order they were received
 	// if message was handled successfully publish tombstone event to redirect topic
-	//retryConsumer, err := NewKafkaConsumer(
-	//	t.cfg,
-	//	t.logger,
-	//	NewRetryMiddleware(t),
-	//)
-	//
-	//if err != nil {
-	//	return errors.WithStack(err)
-	//}
-	//
-	//handler, ok := t.registry.Get(topic)
-	//if !ok || handler == nil {
-	//	return errors.New(fmt.Sprintf("handler for topic: %s not found", topic))
-	//}
-	//
-	//go func() {
-	//	errCh <- retryConsumer.Consume(ctx, t.retryTopic(topic), handler)
-	//}()
+
+	//cfg2 := t.cfg
+	//cfg2.To
+	errCh := make(chan error, 10)
+
+	retryConsumer, err := NewKafkaConsumer(
+		t.cfg,
+		t.logger,
+		NewRetryMiddleware(t),
+	)
+
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	handler, ok := t.registry.Get(topic)
+	if !ok || handler == nil {
+		return errors.New(fmt.Sprintf("handler for topic: %s not found", topic))
+	}
+
+	go func() {
+		errCh <- retryConsumer.Consume(ctx, t.retryTopic(topic), handler)
+	}()
+	println(errCh)
 	//
 	//// start redirect consumer
 	//// listen for tombstone events and remove successfully handled messages from in memory store
 	////TODO
-	//redirectConsumer, err := NewKafkaConsumer(
-	//	t.cfg,
-	//	t.logger,
-	//)
-	//
-	//if err != nil {
-	//	return errors.WithStack(err)
-	//}
-	//
-	//go func() {
-	//	errCh <- redirectConsumer.Consume(ctx, t.redirectTopic(topic), NewRedirectHandler(t))
-	//}()
+	redirectConsumer, err := NewKafkaConsumer(
+		t.cfg,
+		t.logger,
+	)
+
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	go func() {
+		t.errors <- redirectConsumer.Consume(ctx, t.redirectTopic(topic), NewRedirectHandler(t))
+	}()
 	//
 	//go func() {
 	//	for err := range errCh {
@@ -212,7 +226,16 @@ func (t *ErrorTracker) IsRelated(topic string, msg Message) bool {
 func (t *ErrorTracker) Redirect(ctx context.Context, msg Message) error {
 	g, ctx := errgroup.WithContext(ctx)
 
-	id := uuid.New().String()
+	idH, ok := msg.Headers.Get(headerRetry)
+	if ok {
+		log.Print(idH)
+		// msg was already handled
+	}
+
+	id, err := t.comparator.AddMessage(ctx, msg)
+	if err != nil {
+		return errors.WithStack(err)
+	}
 
 	g.Go(func() error {
 		retryMsg := Message{
@@ -221,8 +244,16 @@ func (t *ErrorTracker) Redirect(ctx context.Context, msg Message) error {
 			Payload: msg.Payload,
 			Headers: HeaderList{
 				{
-					Key:   []byte("id"),
+					Key:   []byte(headerID),
 					Value: []byte(id),
+				},
+				{
+					Key:   []byte(headerRetry), //temporary header
+					Value: []byte("true"),
+				},
+				{
+					Key:   []byte(HeaderTopic), //temporary header
+					Value: []byte(msg.topic),
 				},
 			},
 		}
@@ -237,7 +268,7 @@ func (t *ErrorTracker) Redirect(ctx context.Context, msg Message) error {
 			Payload: []byte(id),
 			Headers: HeaderList{
 				{
-					Key:   []byte("topic"),
+					Key:   []byte(HeaderTopic),
 					Value: []byte(msg.topic),
 				},
 				{
@@ -251,10 +282,6 @@ func (t *ErrorTracker) Redirect(ctx context.Context, msg Message) error {
 	})
 
 	if err := g.Wait(); err != nil {
-		return errors.WithStack(err)
-	}
-
-	if err := t.comparator.AddMessage(ctx, msg); err != nil {
 		return errors.WithStack(err)
 	}
 
@@ -285,24 +312,29 @@ func (t *ErrorTracker) LockMessage(ctx context.Context, m Message) error {
 	return nil
 }
 
-func (t *ErrorTracker) Free(ctx context.Context, m Message) error {
-	id, ok := m.Headers.Get("id")
+func (t *ErrorTracker) Free(ctx context.Context, msg Message) error {
+	id, ok := msg.Headers.Get(headerRetry)
+	if !ok {
+		return errors.New("topic id not found")
+	}
+
+	topic, ok := msg.Headers.Get(HeaderTopic)
 	if !ok {
 		return errors.New("topic header not found")
 	}
 
 	newMessage := Message{
-		topic:   t.redirectTopic(m.topic),
+		topic:   t.redirectTopic(topic),
 		Key:     []byte(id),
 		Payload: nil,
 		Headers: HeaderList{
 			{
-				Key:   []byte("topic"),
-				Value: []byte(m.topic),
+				Key:   []byte(HeaderTopic),
+				Value: []byte(msg.topic),
 			},
 			{
-				Key:   []byte("key"),
-				Value: m.Key,
+				Key:   []byte(headerKey),
+				Value: msg.Key,
 			},
 		},
 	}
@@ -310,27 +342,23 @@ func (t *ErrorTracker) Free(ctx context.Context, m Message) error {
 	return t.producer.publish(ctx, newMessage)
 }
 
-func (t *ErrorTracker) ReleaseMessage(_ context.Context, m Message) error {
-	topic, ok := m.Headers.Get("topic")
+func (t *ErrorTracker) ReleaseMessage(ctx context.Context, msg Message) error {
+	topic, ok := msg.Headers.Get(HeaderTopic)
 	if !ok {
 		return errors.New("topic header not found")
 	}
 
-	k, ok := m.Headers.Get("key")
+	key, ok := msg.Headers.Get(headerKey)
 	if !ok {
-		return errors.New("topic header not found")
+		return errors.New("key header not found")
 	}
 
-	t.Lock()
-	mm := remove(t.lm[topic][k], string(m.Key))
-
-	if len(mm) == 0 {
-		delete(t.lm[topic], k)
-	} else {
-		t.lm[topic][k] = mm
+	if err := t.comparator.ReleaseMessage(ctx, Message{
+		Key:   []byte(key),
+		topic: topic,
+	}); err != nil {
+		return errors.WithStack(err)
 	}
-
-	t.Unlock()
 
 	return nil
 }
@@ -373,7 +401,7 @@ func NewRedirectHandler(t *ErrorTracker) *RedirectHandler {
 	return &RedirectHandler{t: t}
 }
 
-func (r RedirectHandler) Handle(ctx context.Context, msg Message) error {
+func (r *RedirectHandler) Handle(ctx context.Context, msg Message) error {
 	if msg.Payload != nil {
 		return nil
 	}
@@ -405,14 +433,4 @@ func (e RetriableError) Error() string {
 
 func (e RetriableError) ShouldRetry() bool {
 	return e.Retry
-}
-
-func remove(s []string, r string) []string {
-	for i, v := range s {
-		if v == r {
-			return append(s[:i], s[i+1:]...)
-		}
-	}
-
-	return s
 }

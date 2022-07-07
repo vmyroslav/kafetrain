@@ -16,8 +16,9 @@ type Config struct {
 	// Consumer configuration.
 	MaxProcessingTime uint16 `envconfig:"KAFKA_MAX_PROCESSING_TIME_MS" default:"100"`
 	InitialOffset     int64  `envconfig:"KAFKA_CONSUMER_INITIAL_OFFSET" default:"-2"`
+	Silent            bool   `envconfig:"KAFKA_CONSUMER_SILENT" default:"false"`
 
 	// Retry configuration.
-	RetryTopicPrefix    string `envconfig:"KAFKA_RETRY_TOPIC_PREFIX" default:"Retry"`       // topic for messages to Retry
+	RetryTopicPrefix    string `envconfig:"KAFKA_RETRY_TOPIC_PREFIX" default:"retry"`       // topic for messages to Retry
 	RedirectTopicPrefix string `envconfig:"KAFKA_REDIRECT_TOPIC_PREFIX" default:"redirect"` // topic with message ids that should be retried
 }

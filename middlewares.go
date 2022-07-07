@@ -35,6 +35,8 @@ func NewLoggingMiddleware(logger *zap.Logger) Middleware {
 func NewErrorHandlingMiddleware(t *ErrorTracker) Middleware {
 	return func(next MessageHandleFunc) MessageHandleFunc {
 		return func(ctx context.Context, msg Message) error {
+			log.Println("ErrorHandlingMiddleware")
+
 			if t.IsRelated(msg.topic, msg) {
 				log.Println("related msg")
 				if err := t.Redirect(ctx, msg); err != nil {
@@ -67,6 +69,8 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 	return func(next MessageHandleFunc) MessageHandleFunc {
 		return func(ctx context.Context, message Message) error {
 			//TODO: add limiter and backoff
+
+			log.Println("retry msg")
 			if err := next(ctx, message); err != nil {
 				return err
 			}

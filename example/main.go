@@ -32,8 +32,12 @@ func main() {
 	registry := kafetrain.NewHandlerRegistry()
 	registry.Add(cfg.Topic, NewHandlerExample(logger))
 
-	t, err := kafetrain.NewTracker(cfg.KafkaConfig, logger, kafetrain.NewKeyComparator(), registry)
+	t, err := kafetrain.NewTracker(cfg.KafkaConfig, logger, kafetrain.NewKeyTracker(), registry)
 	if err != nil {
+		logger.Fatal("could not initialize error tracker", zap.Error(err))
+	}
+
+	if err = t.Start(ctx, cfg.Topic); err != nil {
 		logger.Fatal("could not start error tracker", zap.Error(err))
 	}
 
