@@ -252,7 +252,7 @@ func (t *ErrorTracker) Redirect(ctx context.Context, msg Message) error {
 					Value: []byte("true"),
 				},
 				{
-					Key:   []byte(HeaderTopic), //temporary header
+					Key:   []byte(HeaderTopic),
 					Value: []byte(msg.topic),
 				},
 			},
@@ -330,7 +330,7 @@ func (t *ErrorTracker) Free(ctx context.Context, msg Message) error {
 		Headers: HeaderList{
 			{
 				Key:   []byte(HeaderTopic),
-				Value: []byte(msg.topic),
+				Value: []byte(topic),
 			},
 			{
 				Key:   []byte(headerKey),
