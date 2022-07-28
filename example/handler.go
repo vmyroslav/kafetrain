@@ -25,7 +25,7 @@ func (h *HandlerExample) Handle(ctx context.Context, msg kafetrain.Message) erro
 	_, isRetry := msg.Headers.Get("retry")
 	if isRetry {
 		h.logger.Info("retry in handler", zap.String("key", string(msg.Key)))
-		return nil
+		//return nil
 	}
 
 	return kafetrain.RetriableError{
