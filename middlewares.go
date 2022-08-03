@@ -33,6 +33,7 @@ func NewLoggingMiddleware(logger *zap.Logger) Middleware {
 
 // NewErrorHandlingMiddleware track message processing time.
 func NewErrorHandlingMiddleware(t *ErrorTracker) Middleware {
+	//TODO: could be done in interceptors?
 	return func(next MessageHandleFunc) MessageHandleFunc {
 		return func(ctx context.Context, msg Message) error {
 			log.Println("ErrorHandlingMiddleware")
@@ -80,6 +81,19 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 			}
 
 			return nil
+		}
+	}
+}
+
+// NewFilterMiddleware filter messages based on provided filter function.
+func NewFilterMiddleware(filterFunc func(msg Message) bool) Middleware {
+	return func(next MessageHandleFunc) MessageHandleFunc {
+		return func(ctx context.Context, message Message) error {
+			if ok := filterFunc(message); !ok {
+				return nil
+			}
+
+			return next(ctx, message)
 		}
 	}
 }

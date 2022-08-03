@@ -18,8 +18,14 @@ type Config struct {
 	InitialOffset     int64  `envconfig:"KAFKA_CONSUMER_INITIAL_OFFSET" default:"-2"`
 	Silent            bool   `envconfig:"KAFKA_CONSUMER_SILENT" default:"false"`
 
+	// Streamer configuration.
+	BuffSize uint16 `envconfig:"KAFKA_MAX_PROCESSING_TIME_MS" default:"256"`
+
 	// Retry configuration.
 	RetryTopicPrefix    string `envconfig:"KAFKA_RETRY_TOPIC_PREFIX" default:"retry"`       // topic for messages to Retry
 	RedirectTopicPrefix string `envconfig:"KAFKA_REDIRECT_TOPIC_PREFIX" default:"redirect"` // topic with message ids that should be retried
 	RetrySegmentSize    int64  `envconfig:"KAFKA_REDIRECT_TOPIC_PREFIX" default:"redirect"` // topic with message ids that should be retried
+}
+
+type ErrorTrackerConfig struct {
 }

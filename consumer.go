@@ -17,6 +17,11 @@ type Consumer interface {
 	Close() error
 }
 
+type Streamer interface {
+	Stream(ctx context.Context, topic string) (<-chan Message, <-chan error)
+	Close() error
+}
+
 // KafkaConsumer consumes topic.
 type KafkaConsumer struct {
 	cfg    Config
@@ -49,27 +54,27 @@ func NewKafkaConsumer(
 	}, nil
 }
 
-func createSaramaConfig(config Config) (*sarama.Config, error) {
+func createSaramaConfig(cfg Config) (*sarama.Config, error) {
 	c := sarama.NewConfig()
 
-	v, err := sarama.ParseKafkaVersion(config.Version)
+	v, err := sarama.ParseKafkaVersion(cfg.Version)
 	if err != nil {
-		return nil, errors.Wrapf(err, "unable to parse Kafka version: %s", config.Version)
+		return nil, errors.Wrapf(err, "unable to parse Kafka version: %s", cfg.Version)
 	}
 
 	c.Version = v
-	c.ClientID = config.ClientID
+	c.ClientID = cfg.ClientID
 
 	c.Consumer.Offsets.AutoCommit.Enable = true
 	c.Consumer.Offsets.Initial = sarama.OffsetOldest
 	c.Consumer.Return.Errors = true
-	c.Consumer.MaxProcessingTime = time.Duration(config.MaxProcessingTime) * time.Millisecond
+	c.Consumer.MaxProcessingTime = time.Duration(cfg.MaxProcessingTime) * time.Millisecond
 
-	c.Net.SASL.Password = config.Password
-	c.Net.SASL.User = config.Username
+	c.Net.SASL.Password = cfg.Password
+	c.Net.SASL.User = cfg.Username
 	c.Net.SASL.Mechanism = sarama.SASLTypePlaintext
 
-	if config.CACert != "" {
+	if cfg.CACert != "" {
 		c.Net.SASL.Enable = true
 		c.Net.TLS.Enable = true
 
@@ -82,7 +87,7 @@ func createSaramaConfig(config Config) (*sarama.Config, error) {
 			rootCAs = x509.NewCertPool()
 		}
 
-		if ok := rootCAs.AppendCertsFromPEM([]byte(config.CACert)); !ok {
+		if ok := rootCAs.AppendCertsFromPEM([]byte(cfg.CACert)); !ok {
 			return nil, errors.New("could not append ca cert")
 		}
 
@@ -96,7 +101,7 @@ func createSaramaConfig(config Config) (*sarama.Config, error) {
 }
 
 // Consume consume messages from kafka.
-func (c KafkaConsumer) Consume(ctx context.Context, topic string, messageHandler MessageHandler) error {
+func (c *KafkaConsumer) Consume(ctx context.Context, topic string, messageHandler MessageHandler) error {
 	handler := newHandler(messageHandler, c.middlewares, c.logger, !c.cfg.Silent)
 	c.logger.Info("started consuming")
 
@@ -127,6 +132,24 @@ func (c *KafkaConsumer) Close() error {
 	return errors.WithStack(c.consumerGroup.Close())
 }
 
+func (c *KafkaConsumer) Stream(ctx context.Context, topic string) (<-chan Message, <-chan error) {
+	msgCh := make(chan Message, c.cfg.BuffSize)
+	errCh := make(chan error, 1)
+	handler := newHandler(MessageHandleFunc(func(ctx context.Context, message Message) error {
+		msgCh <- message
+
+		return nil
+	}), c.middlewares, c.logger, !c.cfg.Silent)
+
+	go func() {
+		if err := c.consumerGroup.Consume(ctx, []string{topic}, handler); err != nil {
+			errCh <- errors.WithStack(err)
+		}
+	}()
+
+	return msgCh, errCh
+}
+
 // MessageHandleFunc handles messages.
 type MessageHandleFunc func(ctx context.Context, message Message) error
 
@@ -149,9 +172,9 @@ type saramaHandler struct {
 	shouldCommit bool
 }
 
-func newHandler(handler MessageHandler, middlewares []Middleware, logger *zap.Logger, commit bool) *saramaHandler {
+func newHandler(baseHandler MessageHandler, middlewares []Middleware, logger *zap.Logger, commit bool) *saramaHandler {
 	h := saramaHandler{
-		messageHandler: newMessageHandlerFunc(handler),
+		messageHandler: newMessageHandlerFunc(baseHandler),
 		logger:         logger,
 		shouldCommit:   commit,
 	}
@@ -172,6 +195,7 @@ func newMessageHandlerFunc(handler MessageHandler) MessageHandleFunc {
 }
 
 func (h *saramaHandler) Setup(session sarama.ConsumerGroupSession) error {
+	session.ResetOffset("", 1, 1, "") //TODO: implement
 	return nil
 }
 
@@ -212,4 +236,38 @@ func (h *saramaHandler) mapHeaders(headers []*sarama.RecordHeader) HeaderList {
 	}
 
 	return headerList
+}
+
+type consumecfg struct {
+	Silent    bool `envconfig:"KAFKA_CONSUMER_SILENT" default:"false"`
+	Offset    int32
+	Partition int32
+	filerFunc func()
+}
+
+// Consume consume messages from kafka.
+func (c *KafkaConsumer) ConsumeFrom(ctx context.Context, topic string, messageHandler MessageHandler) error {
+	handler := newHandler(messageHandler, c.middlewares, c.logger, !c.cfg.Silent)
+	c.logger.Info("started consuming")
+
+	// Consume errors
+	go func() {
+		for err := range c.consumerGroup.Errors() {
+			c.logger.Error("consumerGroup handlers error", zap.Error(err))
+		}
+	}()
+
+	for {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			c.logger.Error("consumerGroup handlers error", zap.Error(errors.New("context was canceled")))
+
+			break
+		}
+
+		if err := c.consumerGroup.Consume(ctx, []string{topic}, handler); err != nil {
+			return errors.WithStack(err)
+		}
+	}
+
+	return nil
 }
