@@ -37,16 +37,15 @@ func main() {
 	kafkaConsumer, err := kafetrain.NewKafkaConsumer(
 		kCfg,
 		logger,
-		kafetrain.NewFilterMiddleware(func(msg kafetrain.Message) bool {
-			return (string(msg.Key)) != "1"
-		}),
 	)
 
 	if err != nil {
 		logger.Fatal("could not create kafka consumer", zap.Error(err))
 	}
 
-	msgCh, errCh := kafkaConsumer.Stream(ctx, "hello-world")
+	msgCh, errCh := kafkaConsumer.WithMiddlewares(kafetrain.NewFilterMiddleware(func(msg kafetrain.Message) bool {
+		return (string(msg.Key)) != "1"
+	})).Stream(ctx, "hello-world")
 	go func() {
 		for msg := range msgCh {
 			logger.Info("message received", zap.String(

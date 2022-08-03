@@ -41,17 +41,16 @@ func main() {
 		logger.Fatal("could not start error tracker", zap.Error(err))
 	}
 
-	kafkaConsumer, err := kafetrain.NewKafkaConsumer(
-		cfg.KafkaConfig,
-		logger,
-		kafetrain.NewLoggingMiddleware(logger),
-		kafetrain.NewErrorHandlingMiddleware(t),
-		//kafetrain.NewRetryMiddleware(t),
-	)
+	kafkaConsumer, err := kafetrain.NewKafkaConsumer(cfg.KafkaConfig, logger)
 
 	if err != nil {
 		logger.Fatal("could not create kafka consumer", zap.Error(err))
 	}
+
+	kafkaConsumer.WithMiddlewares(
+		kafetrain.NewLoggingMiddleware(logger),
+		kafetrain.NewErrorHandlingMiddleware(t),
+	)
 
 	go func() {
 		handler, _ := registry.Get(cfg.Topic)

@@ -39,8 +39,9 @@ func main() {
 	kafkaConsumer, err := kafetrain.NewKafkaConsumer(
 		kCfg,
 		logger,
-		kafetrain.NewLoggingMiddleware(logger),
 	)
+
+	kafkaConsumer.WithMiddlewares(kafetrain.NewLoggingMiddleware(logger))
 
 	if err != nil {
 		logger.Fatal("could not create kafka consumer", zap.Error(err))

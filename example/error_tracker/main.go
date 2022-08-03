@@ -41,9 +41,9 @@ func main() {
 		logger.Fatal("could not start error tracker", zap.Error(err))
 	}
 
-	kafkaConsumer, err := kafetrain.NewKafkaConsumer(
-		cfg.KafkaConfig,
-		logger,
+	kafkaConsumer, err := kafetrain.NewKafkaConsumer(cfg.KafkaConfig, logger)
+
+	kafkaConsumer.WithMiddlewares(
 		kafetrain.NewLoggingMiddleware(logger),
 		kafetrain.NewErrorHandlingMiddleware(t),
 		//kafetrain.NewRetryMiddleware(t),

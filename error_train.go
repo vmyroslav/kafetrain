@@ -172,7 +172,6 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 	retryConsumer, err := NewKafkaConsumer(
 		t.cfg,
 		t.logger,
-		NewRetryMiddleware(t),
 	)
 
 	if err != nil {
@@ -185,7 +184,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 	}
 
 	go func() {
-		errCh <- retryConsumer.Consume(ctx, t.retryTopic(topic), handler)
+		errCh <- retryConsumer.WithMiddlewares(NewRetryMiddleware(t)).Consume(ctx, t.retryTopic(topic), handler)
 	}()
 	println(errCh)
 	//

@@ -34,7 +34,6 @@ type KafkaConsumer struct {
 func NewKafkaConsumer(
 	cfg Config,
 	logger *zap.Logger,
-	middlewares ...Middleware,
 ) (*KafkaConsumer, error) {
 	sc, err := createSaramaConfig(cfg)
 	if err != nil {
@@ -49,7 +48,7 @@ func NewKafkaConsumer(
 	return &KafkaConsumer{
 		cfg:           cfg,
 		consumerGroup: cg,
-		middlewares:   middlewares,
+		middlewares:   make([]Middleware, 0),
 		logger:        logger,
 	}, nil
 }
@@ -148,6 +147,11 @@ func (c *KafkaConsumer) Stream(ctx context.Context, topic string) (<-chan Messag
 	}()
 
 	return msgCh, errCh
+}
+
+func (c *KafkaConsumer) WithMiddlewares(middlewares ...Middleware) *KafkaConsumer {
+	c.middlewares = append(c.middlewares, middlewares...)
+	return c
 }
 
 // MessageHandleFunc handles messages.
