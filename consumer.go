@@ -29,11 +29,13 @@ type KafkaConsumer struct {
 
 	consumerGroup sarama.ConsumerGroup
 	middlewares   []Middleware
+	optionsCfg    *consumerOptionConfig
 }
 
 func NewKafkaConsumer(
 	cfg Config,
 	logger *zap.Logger,
+	options ...Option,
 ) (*KafkaConsumer, error) {
 	sc, err := createSaramaConfig(cfg)
 	if err != nil {
@@ -45,11 +47,18 @@ func NewKafkaConsumer(
 		return nil, errors.Wrapf(err, "unable to create sarama consumer group")
 	}
 
+	optionsCfg := newConsumerOptionConfig()
+
+	for _, o := range options {
+		o.Apply(optionsCfg)
+	}
+
 	return &KafkaConsumer{
 		cfg:           cfg,
+		logger:        logger,
 		consumerGroup: cg,
 		middlewares:   make([]Middleware, 0),
-		logger:        logger,
+		optionsCfg:    optionsCfg,
 	}, nil
 }
 
