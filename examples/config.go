@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"github.com/kelseyhightower/envconfig"
 	"github.com/vmyroslav/kafetrain"
-	"github.com/vmyroslav/kafetrain/example/pkg/logging"
+	"github.com/vmyroslav/kafetrain/examples/pkg/logging"
 )
 
 type Config struct {

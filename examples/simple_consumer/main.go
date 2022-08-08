@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/vmyroslav/kafetrain"
-	"github.com/vmyroslav/kafetrain/example/pkg/logging"
+	"github.com/vmyroslav/kafetrain/examples/pkg/logging"
 	"go.uber.org/zap"
 	"os"
 	"os/signal"

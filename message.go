@@ -1,14 +1,21 @@
 package kafetrain
 
-// Message generic kafka message.
+import "time"
+
+// Message generic kafka message. TODO: add generic type for marshaling
 type Message struct {
 	Key     []byte
 	Payload []byte
 	Headers HeaderList
 
+	transformedKey     any
+	transformedPayload any
+
 	topic     string
 	offset    int64
 	partition int32
+
+	Timestamp time.Time
 }
 
 type Header struct {

@@ -7,10 +7,15 @@ type consumerOptionConfig struct {
 	EndsAt    time.Time
 	Offset    int64
 	Limit     int64
+	Silent    bool
+
+	partitionsMap map[int32]int64
 }
 
 func newConsumerOptionConfig() *consumerOptionConfig {
-	return &consumerOptionConfig{}
+	return &consumerOptionConfig{
+		Offset: OffsetNewest,
+	}
 }
 
 // Option sets a parameter for the logger.
@@ -45,5 +50,11 @@ func WithOffset(offset int64) Option {
 func WithLimit(limit int64) Option {
 	return optionFn(func(cfg *consumerOptionConfig) {
 		cfg.Limit = limit
+	})
+}
+
+func WithoutCommit() Option {
+	return optionFn(func(cfg *consumerOptionConfig) {
+		cfg.Silent = true
 	})
 }

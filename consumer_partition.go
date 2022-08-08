@@ -22,7 +22,7 @@ func NewKafkaPartitionConsumer(
 	logger *zap.Logger,
 	middlewares []Middleware,
 	topic string,
-	partition int32,
+	partitions []int32,
 ) (*KafkaPartitionConsumer, error) {
 	sc, err := createSaramaConfig(cfg)
 	if err != nil {
@@ -50,29 +50,26 @@ func NewKafkaPartitionConsumer(
 }
 
 func (k *KafkaPartitionConsumer) Consume(ctx context.Context, topic string, messageHandler MessageHandler) error {
-	//a, err := k.sConsumer.ConsumePartition(topic, 0, sarama.OffsetNewest)
-	//if err != nil {
-	//	return errors.Wrapf(err, "unable to consume partition")
-	//}
-	//
-	//for {
-	//	select {
-	//	case <-ctx.Done():
-	//
-	//
-	//}
-	//
-	//a.
+	a, err := k.sConsumer.ConsumePartition(topic, 0, sarama.OffsetNewest)
+	if err != nil {
+		return errors.Wrapf(err, "unable to consume partition")
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+
+		case msg := <-a.Messages():
+			messageHandler(msg)
+		}
+
+	}
 	//	//TODO implement me
-	panic("implement me")
+	return nil
 }
 
 func (k *KafkaPartitionConsumer) Close() error {
 	//TODO implement me
 	panic("implement me")
 }
-
-//
-//func (c *Client) Offset(topic string, partition int32, time time.Time) (int64, error) {
-//	return c.sc.GetOffset(topic, partition, time.UnixMilli())
-//}

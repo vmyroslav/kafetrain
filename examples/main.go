@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/vmyroslav/kafetrain/example/pkg/logging"
+	"github.com/vmyroslav/kafetrain/examples/pkg/logging"
 	"os"
 	"os/signal"
 	"sync"
