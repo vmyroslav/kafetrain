@@ -3,15 +3,14 @@ package kafetrain
 import (
 	"context"
 	"fmt"
-	"github.com/google/uuid"
-	"go.uber.org/zap"
-	"log"
-	"sync"
 	"time"
 
 	"github.com/Shopify/sarama"
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
+	"sync"
 )
 
 const (
@@ -21,15 +20,16 @@ const (
 	headerKey   = "key"
 )
 
-//TODO: implement error_train
+// TODO: implement error_train
 type ErrorTracker struct {
 	cfg    Config
 	logger *zap.Logger
 
-	producer   *producer
-	comparator MessageChainTracker
-	lm         lockMap
-	registry   *HandlerRegistry
+	producer        *producer
+	comparator      MessageChainTracker
+	lm              lockMap
+	registry        *HandlerRegistry
+	backoffStrategy BackoffStrategy
 
 	errors chan error
 
@@ -42,8 +42,22 @@ func NewTracker(
 	comparator MessageChainTracker,
 	registry *HandlerRegistry,
 ) (*ErrorTracker, error) {
+	return NewTrackerWithBackoff(cfg, logger, comparator, registry, nil)
+}
+
+func NewTrackerWithBackoff(
+	cfg Config,
+	logger *zap.Logger,
+	comparator MessageChainTracker,
+	registry *HandlerRegistry,
+	backoff BackoffStrategy,
+) (*ErrorTracker, error) {
 	if comparator == nil {
 		comparator = NewKeyTracker()
+	}
+
+	if backoff == nil {
+		backoff = NewExponentialBackoff()
 	}
 
 	producer, err := newProducer(cfg)
@@ -52,13 +66,14 @@ func NewTracker(
 	}
 
 	t := ErrorTracker{
-		cfg:        cfg,
-		logger:     logger,
-		registry:   registry,
-		producer:   producer,
-		lm:         make(lockMap),
-		comparator: comparator,
-		errors:     make(chan error, 256),
+		cfg:             cfg,
+		logger:          logger,
+		registry:        registry,
+		producer:        producer,
+		lm:              make(lockMap),
+		comparator:      comparator,
+		backoffStrategy: backoff,
+		errors:          make(chan error, 256),
 	}
 
 	return &t, nil
@@ -83,7 +98,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 
 	g.Go(func() error {
 		err := admin.CreateTopic(t.retryTopic(topic), &sarama.TopicDetail{
-			NumPartitions:     1, //TODO: configurable
+			NumPartitions:     t.cfg.RetryTopicPartitions,
 			ReplicationFactor: 1,
 			ConfigEntries: map[string]*string{
 				"cleanup.policy": toPtr("compact"),
@@ -103,11 +118,32 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 
 	g.Go(func() error {
 		err := admin.CreateTopic(t.redirectTopic(topic), &sarama.TopicDetail{
-			NumPartitions:     1, //TODO: configurable
+			NumPartitions:     t.cfg.RetryTopicPartitions,
 			ReplicationFactor: 1,
 			ConfigEntries: map[string]*string{
 				"cleanup.policy": toPtr("compact"),
 				"segment.ms":     toPtr("100"),
+			},
+		}, false)
+		if err != nil {
+			sErr, ok := err.(*sarama.TopicError) // nolint: errorlint
+
+			if !(ok && sErr.Err == sarama.ErrTopicAlreadyExists) {
+				return errors.WithStack(err)
+			}
+		}
+
+		return nil
+	})
+
+	// Create DLQ topic for messages that exceed max retries
+	g.Go(func() error {
+		err := admin.CreateTopic(t.dlqTopic(topic), &sarama.TopicDetail{
+			NumPartitions:     t.cfg.RetryTopicPartitions,
+			ReplicationFactor: 1,
+			ConfigEntries: map[string]*string{
+				"cleanup.policy": toPtr("delete"), // DLQ uses delete, not compact
+				"retention.ms":   toPtr("-1"),     // Infinite retention for DLQ
 			},
 		}, false)
 		if err != nil {
@@ -186,7 +222,6 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 	go func() {
 		errCh <- retryConsumer.WithMiddlewares(NewRetryMiddleware(t)).Consume(ctx, t.retryTopic(topic), handler)
 	}()
-	println(errCh)
 	//
 	//// start redirect consumer
 	//// listen for tombstone events and remove successfully handled messages from in memory store
@@ -215,38 +250,73 @@ func (t *ErrorTracker) IsRelated(topic string, msg Message) bool {
 }
 
 func (t *ErrorTracker) Redirect(ctx context.Context, msg Message) error {
+	return t.RedirectWithError(ctx, msg, nil)
+}
+
+func (t *ErrorTracker) RedirectWithError(ctx context.Context, msg Message, lastError error) error {
 	g, ctx := errgroup.WithContext(ctx)
 
-	idH, ok := msg.Headers.Get(headerRetry)
-	if ok {
-		log.Print(idH)
-		// msg was already handled
+	// Get current retry attempt (default to 0 for first failure)
+	currentAttempt, _ := GetHeaderValue[int](&msg.Headers, HeaderRetryAttempt)
+
+	// Get original failure time (or set it now for first failure)
+	originalTime, ok := GetHeaderValue[time.Time](&msg.Headers, HeaderRetryOriginalTime)
+	if !ok {
+		originalTime = time.Now()
 	}
+
+	// Calculate next retry time based on backoff strategy
+	nextDelay := t.backoffStrategy.NextDelay(currentAttempt)
+	nextRetryTime := time.Now().Add(nextDelay)
+
+	// Increment attempt counter
+	nextAttempt := currentAttempt + 1
 
 	id, err := t.comparator.AddMessage(ctx, msg)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
+	t.logger.Info("redirecting message to retry topic",
+		zap.String("topic", msg.topic),
+		zap.Int("attempt", nextAttempt),
+		zap.Int("max_retries", t.cfg.MaxRetries),
+		zap.Duration("next_delay", nextDelay),
+		zap.Time("next_retry_time", nextRetryTime),
+	)
+
 	g.Go(func() error {
+		// Copy original message headers
+		retryHeaders := make(HeaderList, 0, len(msg.Headers)+6)
+		for _, h := range msg.Headers {
+			// Skip old retry headers to avoid duplicates
+			key := string(h.Key)
+			if key != HeaderRetryAttempt && key != HeaderRetryMax &&
+				key != HeaderRetryNextTime && key != HeaderRetryOriginalTime &&
+				key != HeaderRetryReason && key != headerID && key != headerRetry {
+				retryHeaders = append(retryHeaders, h)
+			}
+		}
+
+		// Add/update retry metadata headers
+		SetHeader[int](&retryHeaders, HeaderRetryAttempt, nextAttempt)
+		SetHeader[int](&retryHeaders, HeaderRetryMax, t.cfg.MaxRetries)
+		SetHeader[time.Time](&retryHeaders, HeaderRetryNextTime, nextRetryTime)
+		SetHeader[time.Time](&retryHeaders, HeaderRetryOriginalTime, originalTime)
+		if lastError != nil {
+			SetHeader[string](&retryHeaders, HeaderRetryReason, lastError.Error())
+		}
+
+		// Add internal tracking headers
+		SetHeader[string](&retryHeaders, headerID, id)
+		SetHeader[string](&retryHeaders, headerRetry, "true")
+		SetHeader[string](&retryHeaders, HeaderTopic, msg.topic)
+
 		retryMsg := Message{
 			topic:   t.retryTopic(msg.topic),
 			Key:     msg.Key,
 			Payload: msg.Payload,
-			Headers: HeaderList{
-				{
-					Key:   []byte(headerID),
-					Value: []byte(id),
-				},
-				{
-					Key:   []byte(headerRetry), //temporary header
-					Value: []byte("true"),
-				},
-				{
-					Key:   []byte(HeaderTopic),
-					Value: []byte(msg.topic),
-				},
-			},
+			Headers: retryHeaders,
 		}
 
 		return t.producer.publish(ctx, retryMsg)
@@ -280,12 +350,12 @@ func (t *ErrorTracker) Redirect(ctx context.Context, msg Message) error {
 }
 
 func (t *ErrorTracker) LockMessage(ctx context.Context, m Message) error {
-	topic, ok := m.Headers.Get("topic")
+	topic, ok := GetHeaderValue[string](&m.Headers, "topic")
 	if !ok {
 		return errors.New("topic header not found")
 	}
 
-	k, ok := m.Headers.Get("key")
+	k, ok := GetHeaderValue[string](&m.Headers, "key")
 	if !ok {
 		return errors.New("topic header not found")
 	}
@@ -304,12 +374,12 @@ func (t *ErrorTracker) LockMessage(ctx context.Context, m Message) error {
 }
 
 func (t *ErrorTracker) Free(ctx context.Context, msg Message) error {
-	id, ok := msg.Headers.Get(headerRetry)
+	id, ok := GetHeaderValue[string](&msg.Headers, headerRetry)
 	if !ok {
 		return errors.New("topic id not found")
 	}
 
-	topic, ok := msg.Headers.Get(HeaderTopic)
+	topic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
 	if !ok {
 		return errors.New("topic header not found")
 	}
@@ -334,12 +404,12 @@ func (t *ErrorTracker) Free(ctx context.Context, msg Message) error {
 }
 
 func (t *ErrorTracker) ReleaseMessage(ctx context.Context, msg Message) error {
-	topic, ok := msg.Headers.Get(HeaderTopic)
+	topic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
 	if !ok {
 		return errors.New("topic header not found")
 	}
 
-	key, ok := msg.Headers.Get(headerKey)
+	key, ok := GetHeaderValue[string](&msg.Headers, headerKey)
 	if !ok {
 		return errors.New("key header not found")
 	}
@@ -354,12 +424,67 @@ func (t *ErrorTracker) ReleaseMessage(ctx context.Context, msg Message) error {
 	return nil
 }
 
+// SendToDLQ sends a message that has exceeded max retries to the Dead Letter Queue.
+// It adds DLQ metadata headers and publishes to the DLQ topic.
+func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg Message, lastError error) error {
+	// Get original topic from headers
+	originalTopic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
+	if !ok {
+		originalTopic = msg.topic
+	}
+
+	// Get retry metadata
+	attempt, _ := GetHeaderValue[int](&msg.Headers, HeaderRetryAttempt)
+	originalTime, _ := GetHeaderValue[time.Time](&msg.Headers, HeaderRetryOriginalTime)
+
+	// Copy original message headers (excluding retry headers)
+	dlqHeaders := make(HeaderList, 0, len(msg.Headers)+4)
+	for _, h := range msg.Headers {
+		key := string(h.Key)
+		// Keep original headers but not retry-specific ones
+		if key != HeaderRetryAttempt && key != HeaderRetryMax &&
+			key != HeaderRetryNextTime && key != headerID && key != headerRetry {
+			dlqHeaders = append(dlqHeaders, h)
+		}
+	}
+
+	// Add DLQ metadata headers
+	SetHeader[string](&dlqHeaders, "x-dlq-reason", lastError.Error())
+	SetHeader[time.Time](&dlqHeaders, "x-dlq-timestamp", time.Now())
+	SetHeader[string](&dlqHeaders, "x-dlq-source-topic", originalTopic)
+	SetHeader[int](&dlqHeaders, "x-dlq-retry-attempts", attempt)
+	if !originalTime.IsZero() {
+		SetHeader[time.Time](&dlqHeaders, "x-dlq-original-failure-time", originalTime)
+	}
+
+	dlqMsg := Message{
+		topic:   t.dlqTopic(originalTopic),
+		Key:     msg.Key,
+		Payload: msg.Payload,
+		Headers: dlqHeaders,
+	}
+
+	t.logger.Error("sending message to DLQ (max retries exceeded)",
+		zap.String("original_topic", originalTopic),
+		zap.String("dlq_topic", dlqMsg.topic),
+		zap.Int("attempts", attempt),
+		zap.Int("max_retries", t.cfg.MaxRetries),
+		zap.Error(lastError),
+	)
+
+	return t.producer.publish(ctx, dlqMsg)
+}
+
 func (t *ErrorTracker) retryTopic(topic string) string {
 	return t.cfg.RetryTopicPrefix + "_" + topic
 }
 
 func (t *ErrorTracker) redirectTopic(topic string) string {
 	return t.cfg.RedirectTopicPrefix + "_" + topic
+}
+
+func (t *ErrorTracker) dlqTopic(topic string) string {
+	return t.cfg.DLQTopicPrefix + "_" + topic
 }
 
 type redirectFillHandler struct {

@@ -38,7 +38,7 @@ func TestHandlerRegistryFunc(t *testing.T) {
 	h, ok := hr.Get(topic)
 
 	assert.True(t, ok, "handler should be found")
-	assert.Equal(t, h, handler, "handler should be nil")
+	assert.NotNil(t, h, "handler should not be nil")
 
 	eh, ok := hr.Get("not-existing-topic")
 

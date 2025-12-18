@@ -312,7 +312,7 @@ func (h *saramaHandler) mapHeaders(headers []*sarama.RecordHeader) HeaderList {
 	headerList := HeaderList{}
 
 	for _, header := range headers {
-		headerList.Set(string(header.Key), string(header.Value))
+		SetHeader[string](&headerList, string(header.Key), string(header.Value))
 	}
 
 	return headerList
