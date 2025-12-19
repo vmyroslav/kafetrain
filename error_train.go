@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Shopify/sarama"
+	"github.com/IBM/sarama"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
@@ -20,14 +20,12 @@ const (
 	headerKey   = "key"
 )
 
-// TODO: implement error_train
 type ErrorTracker struct {
 	cfg    Config
 	logger *zap.Logger
 
 	producer        *producer
 	comparator      MessageChainTracker
-	lm              lockMap
 	registry        *HandlerRegistry
 	backoffStrategy BackoffStrategy
 
@@ -70,7 +68,6 @@ func NewTrackerWithBackoff(
 		logger:          logger,
 		registry:        registry,
 		producer:        producer,
-		lm:              make(lockMap),
 		comparator:      comparator,
 		backoffStrategy: backoff,
 		errors:          make(chan error, 256),
@@ -162,48 +159,41 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 		return errors.WithStack(err)
 	}
 
-	// Fill internal store with data from redirect topic
-	//TODO: implement later
-	cfg2 := t.cfg
-	cfg2.GroupID = uuid.New().String()
+	// Restore state by replaying redirect topic
+	// Create temporary consumer group to replay all messages from beginning
+	refillCfg := t.cfg
+	refillCfg.GroupID = uuid.New().String()
 
 	refillConsumer, err := NewKafkaConsumer(
-		t.cfg,
+		refillCfg,
 		t.logger,
 	)
-
 	if err != nil {
 		return errors.WithStack(err)
 	}
-	//
-	////TODO: delete consumer group
-	errCh := make(chan error, 10)
 
-	tctx, cancel := context.WithTimeout(ctx, time.Second*5)
+	// Consume for 5 seconds to replay all existing messages
+	refillCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
+	errCh := make(chan error, 1)
 	go func() {
-		errCh <- refillConsumer.Consume(tctx, t.redirectTopic(topic), newRedirectFillHandler(t))
+		errCh <- refillConsumer.Consume(refillCtx, t.redirectTopic(topic), newRedirectFillHandler(t))
 	}()
 
-	<-tctx.Done()
+	// Wait for timeout or error
+	<-refillCtx.Done()
 
 	if err := refillConsumer.Close(); err != nil {
 		return errors.WithStack(err)
 	}
 
-	err = admin.DeleteConsumerGroup(cfg2.GroupID)
-	if err != nil {
+	// Clean up temporary consumer group
+	if err := admin.DeleteConsumerGroup(refillCfg.GroupID); err != nil {
 		return errors.WithStack(err)
 	}
 
-	// start Retry consumer
-	// try to handle events from this topic in the same order they were received
-	// if message was handled successfully publish tombstone event to redirect topic
-
-	//cfg2 := t.cfg
-	//cfg2.To
-	//errCh := make(chan error, 10)
+	// Start retry consumer to process failed messages
 
 	retryConsumer, err := NewKafkaConsumer(
 		t.cfg,
@@ -222,10 +212,8 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 	go func() {
 		errCh <- retryConsumer.WithMiddlewares(NewRetryMiddleware(t)).Consume(ctx, t.retryTopic(topic), handler)
 	}()
-	//
-	//// start redirect consumer
-	//// listen for tombstone events and remove successfully handled messages from in memory store
-	////TODO
+
+	// Start redirect consumer to handle tombstone events and cleanup tracking state
 	redirectConsumer, err := NewKafkaConsumer(
 		t.cfg,
 		t.logger,
@@ -345,30 +333,6 @@ func (t *ErrorTracker) RedirectWithError(ctx context.Context, msg Message, lastE
 	if err := g.Wait(); err != nil {
 		return errors.WithStack(err)
 	}
-
-	return nil
-}
-
-func (t *ErrorTracker) LockMessage(ctx context.Context, m Message) error {
-	topic, ok := GetHeaderValue[string](&m.Headers, "topic")
-	if !ok {
-		return errors.New("topic header not found")
-	}
-
-	k, ok := GetHeaderValue[string](&m.Headers, "key")
-	if !ok {
-		return errors.New("topic header not found")
-	}
-
-	t.Lock()
-
-	_, ok = t.lm[topic][k]
-	if !ok {
-		t.lm[topic][k] = make([]string, 0)
-	}
-
-	t.lm[topic][k] = append(t.lm[topic][k], string(m.Key))
-	t.Unlock()
 
 	return nil
 }
@@ -496,12 +460,30 @@ func newRedirectFillHandler(t *ErrorTracker) *redirectFillHandler {
 }
 
 func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
-	// no payload means tombstone event
+	// Skip tombstone events (they represent already-completed retries)
 	if msg.Payload == nil {
 		return nil
 	}
 
-	err := r.t.LockMessage(ctx, msg)
+	// Extract original topic and key from headers
+	originalTopic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
+	if !ok {
+		return errors.New("redirect message missing topic header")
+	}
+
+	originalKey, ok := GetHeaderValue[string](&msg.Headers, headerKey)
+	if !ok {
+		return errors.New("redirect message missing key header")
+	}
+
+	// Reconstruct original message to restore to comparator
+	originalMsg := Message{
+		topic: originalTopic,
+		Key:   []byte(originalKey),
+	}
+
+	// Restore to comparator's tracking state
+	_, err := r.t.comparator.AddMessage(ctx, originalMsg)
 	if err != nil {
 		return errors.WithStack(err)
 	}
