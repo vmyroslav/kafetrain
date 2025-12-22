@@ -38,6 +38,7 @@ type lockMap map[string]map[string][]string
 
 func (kt *KeyTracker) AddMessage(_ context.Context, msg Message) (string, error) {
 	kt.Lock()
+
 	key := string(msg.Key)
 
 	_, ok := kt.lm[msg.topic]

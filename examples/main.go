@@ -3,16 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
-
-	"github.com/vmyroslav/kafetrain/examples/pkg/logging"
-	"github.com/vmyroslav/kafetrain/resilience"
-
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 
 	_ "github.com/joho/godotenv/autoload"
+	"github.com/vmyroslav/kafetrain/examples/pkg/logging"
+	"github.com/vmyroslav/kafetrain/resilience"
 	"go.uber.org/zap"
 )
 
@@ -44,7 +42,6 @@ func main() {
 	}
 
 	kafkaConsumer, err := resilience.NewKafkaConsumer(cfg.KafkaConfig, logger)
-
 	if err != nil {
 		logger.Fatal("could not create kafka consumer", zap.Error(err))
 	}

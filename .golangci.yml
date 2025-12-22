@@ -1,63 +1,104 @@
+version: "2"
 run:
   timeout: 5m
-  output:
-    format: tab
-
-linters-settings:
-  govet:
-    check-shadowing: true
-  golint:
-    min-confidence: 0.1
-  maligned:
-    suggest-new: true
-  goconst:
-    min-len: 2
-    min-occurrences: 2
-  misspell:
-    locale: US
-  lll:
-    line-length: 120
-  gocritic:
-    enabled-tags:
-      - performance
-      - style
-      - experimental
-
 linters:
+  default: none
   enable:
     - bodyclose
-    - megacheck
-    - revive
-    - govet
-    - unconvert
-    - megacheck
-    - structcheck
-    - gas
-    - gocyclo
+    - containedctx
+    - copyloopvar
+    - cyclop
+    - dogsled
     - dupl
-    - misspell
-    - unparam
-    - varcheck
-    - deadcode
-    - typecheck
-    - ineffassign
-    - varcheck
-    - stylecheck
+    - errcheck
+    - errchkjson
+    - errname
+    - exhaustive
     - gochecknoinits
-    - exportloopref
+    - goconst
     - gocritic
+    - gocyclo
+    - gosec
+    - govet
+    - importas
+    - ineffassign
+    - interfacebloat
+    - loggercheck
+    - mirror
+    - misspell
     - nakedret
-    - gosimple
+    - nestif
+    - noctx
     - prealloc
-  fast: false
-  disable-all: true
-
-issues:
-  exclude-rules:
-    - text: "at least one file in a package should have a package comment"
-      linters:
-        - stylecheck
-    - text: "should have a package comment, unless it's in another file for this package"
-      linters:
-        - golint
-  exclude-use-default: false
+    - reassign
+    - revive
+    - sloglint
+    - staticcheck
+    - tagliatelle
+    - testifylint
+    - thelper
+    - tparallel
+    - unconvert
+    - unparam
+    - unused
+    - whitespace
+    - wrapcheck
+    - wsl_v5
+  settings:
+    errcheck:
+      check-type-assertions: true
+    goconst:
+      min-len: 2
+      min-occurrences: 2
+    gocritic:
+      enabled-tags:
+        - performance
+        - style
+        - experimental
+        - opinionated
+    govet:
+      enable:
+        - fieldalignment
+    lll:
+      line-length: 140
+    misspell:
+      locale: US
+  exclusions:
+    generated: lax
+    rules:
+      - linters:
+          - staticcheck
+        text: at least one file in a package should have a package comment
+      - linters:
+          - revive
+        text: should have a package comment
+      - linters:
+          - revive
+        text: should have comment or be unexported
+      - linters:
+          - gocritic
+        text: whyNoLint
+      - linters:
+          - cyclop
+          - dupl
+          - gosec
+          - govet
+        path: _test\.go
+    paths:
+      - mock_.+\.go
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - goimports
+    - gofumpt
+  exclusions:
+    generated: lax
+    paths:
+      - mock_.+\.go
+      - third_party$
+      - builtin$
+      - examples$

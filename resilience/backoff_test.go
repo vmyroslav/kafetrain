@@ -122,6 +122,7 @@ func TestConstantBackoff_NegativeAttempt(t *testing.T) {
 
 func TestLinearBackoff_Default(t *testing.T) {
 	t.Parallel()
+
 	backoff := NewLinearBackoff()
 
 	// Test default behavior by checking actual delays
@@ -196,9 +197,11 @@ func TestBackoffStrategy_Interface(t *testing.T) {
 	t.Parallel()
 
 	// Verify all backoff types implement BackoffStrategy interface
-	var _ BackoffStrategy = (*ExponentialBackoff)(nil)
-	var _ BackoffStrategy = (*ConstantBackoff)(nil)
-	var _ BackoffStrategy = (*LinearBackoff)(nil)
+	var (
+		_ BackoffStrategy = (*ExponentialBackoff)(nil)
+		_ BackoffStrategy = (*ConstantBackoff)(nil)
+		_ BackoffStrategy = (*LinearBackoff)(nil)
+	)
 }
 
 func TestExponentialBackoff_RealisticScenario(t *testing.T) {
@@ -208,6 +211,7 @@ func TestExponentialBackoff_RealisticScenario(t *testing.T) {
 	maxDelay := 5 * time.Minute // Default max delay
 
 	var totalWaitTime time.Duration
+
 	maxAttempts := 10
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
@@ -231,6 +235,7 @@ func TestExponentialBackoff_RealisticScenario(t *testing.T) {
 
 func TestConstantBackoff_ConsistentDelays(t *testing.T) {
 	t.Parallel()
+
 	backoff, err := NewConstantBackoff(2 * time.Second)
 	require.NoError(t, err)
 
@@ -245,6 +250,7 @@ func TestConstantBackoff_ConsistentDelays(t *testing.T) {
 
 func TestLinearBackoff_GrowthRate(t *testing.T) {
 	t.Parallel()
+
 	backoff, err := NewLinearBackoffWithConfig(1*time.Second, 1*time.Second, 100*time.Second) // High max so we don't hit it
 	require.NoError(t, err)
 

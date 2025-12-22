@@ -17,18 +17,13 @@ const (
 
 // Message generic kafka message. TODO: add generic type for marshaling
 type Message struct {
-	Key     []byte
-	Payload []byte
-	Headers HeaderList
-
-	transformedKey     any
-	transformedPayload any
-
+	Timestamp time.Time
 	topic     string
+	Key       []byte
+	Payload   []byte
+	Headers   HeaderList
 	offset    int64
 	partition int32
-
-	Timestamp time.Time
 }
 
 // Topic returns the topic name of the message.
@@ -65,6 +60,7 @@ func GetHeaderValue[T any](h *HeaderList, key string) (T, bool) {
 		if bytes.Equal(hdr.Key, keyBytes) {
 			val = string(hdr.Value)
 			found = true
+
 			break
 		}
 	}
@@ -82,12 +78,14 @@ func GetHeaderValue[T any](h *HeaderList, key string) (T, bool) {
 		if err != nil {
 			return zero, false
 		}
+
 		return any(i).(T), true
 	case time.Time:
 		unix, err := strconv.ParseInt(val, 10, 64)
 		if err != nil {
 			return zero, false
 		}
+
 		return any(time.Unix(unix, 0)).(T), true
 	default:
 		return zero, false

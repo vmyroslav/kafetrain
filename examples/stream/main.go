@@ -39,7 +39,6 @@ func main() {
 		kCfg,
 		logger,
 	)
-
 	if err != nil {
 		logger.Fatal("could not create kafka consumer", zap.Error(err))
 	}
@@ -47,6 +46,7 @@ func main() {
 	msgCh, errCh := kafkaConsumer.WithMiddlewares(resilience.NewFilterMiddleware(func(msg resilience.Message) bool {
 		return (string(msg.Key)) != "1"
 	})).Stream(ctx, "hello-world")
+
 	go func() {
 		for msg := range msgCh {
 			logger.Info("message received", zap.String(

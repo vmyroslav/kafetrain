@@ -5,9 +5,8 @@ import (
 	"log"
 	"time"
 
-	"go.uber.org/zap"
-
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
 // NewLoggingMiddleware Middleware for logging.
@@ -34,13 +33,14 @@ func NewLoggingMiddleware(logger *zap.Logger) Middleware {
 
 // NewErrorHandlingMiddleware track message processing time.
 func NewErrorHandlingMiddleware(t *ErrorTracker) Middleware {
-	//TODO: could be done in interceptors?
+	// TODO: could be done in interceptors?
 	return func(next MessageHandleFunc) MessageHandleFunc {
 		return func(ctx context.Context, msg Message) error {
 			log.Println("ErrorHandlingMiddleware")
 
 			if t.IsRelated(msg.topic, msg) {
 				log.Println("related msg")
+
 				if err := t.Redirect(ctx, msg); err != nil {
 					return errors.Wrap(err, "failed to redirect msg")
 				}
@@ -83,6 +83,7 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 
 				// Get the last error reason from headers
 				lastErrorReason, _ := GetHeaderValue[string](&message.Headers, HeaderRetryReason)
+
 				lastError := errors.New(lastErrorReason)
 				if lastErrorReason == "" {
 					lastError = errors.New("max retries exceeded")
@@ -101,6 +102,7 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 				}
 
 				log.Println("retry msg: successfully sent to DLQ and freed from tracking")
+
 				return nil
 			}
 
@@ -115,13 +117,13 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 					log.Printf("retry msg: waiting %v before processing (scheduled for %v)",
 						delay, nextRetryTime)
 
-					// Wait until the scheduled time or context is cancelled
+					// Wait until the scheduled time or context is canceled
 					select {
 					case <-time.After(delay):
 						// Continue processing after delay
 						log.Println("retry msg: delay complete, processing message")
 					case <-ctx.Done():
-						// Context cancelled during delay
+						// Context canceled during delay
 						return ctx.Err()
 					}
 				}
@@ -140,6 +142,7 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 			}
 
 			log.Println("retry msg: successfully processed and freed from tracking")
+
 			return nil
 		}
 	}

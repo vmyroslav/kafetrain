@@ -9,7 +9,8 @@ import (
 
 func TestHandlerRegistry(t *testing.T) {
 	t.Parallel()
-	var topic = "test"
+
+	topic := "test"
 	hr := NewHandlerRegistry()
 	handler := new(dummyHandler)
 
@@ -27,7 +28,8 @@ func TestHandlerRegistry(t *testing.T) {
 
 func TestHandlerRegistryFunc(t *testing.T) {
 	t.Parallel()
-	var topic = "test"
+
+	topic := "test"
 	hr := NewHandlerRegistry()
 
 	handler := MessageHandleFunc(func(ctx context.Context, message Message) error {
@@ -47,8 +49,7 @@ func TestHandlerRegistryFunc(t *testing.T) {
 	assert.Nil(t, eh, "handler should be nil")
 }
 
-type dummyHandler struct {
-}
+type dummyHandler struct{}
 
 func (d *dummyHandler) Handle(_ context.Context, _ Message) error {
 	return nil

@@ -26,7 +26,7 @@ func (h *HandlerExample) Handle(ctx context.Context, msg resilience.Message) err
 	_, isRetry := resilience.GetHeaderValue[string](&msg.Headers, "retry")
 	if isRetry {
 		h.logger.Info("retry in handler", zap.String("key", string(msg.Key)))
-		//return nil
+		// return nil
 	}
 
 	return resilience.RetriableError{

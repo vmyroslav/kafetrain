@@ -8,7 +8,6 @@ import (
 
 	"github.com/IBM/sarama"
 	"github.com/pkg/errors"
-
 	"go.uber.org/zap"
 )
 
@@ -30,13 +29,12 @@ type Streamer interface {
 // KafkaConsumer wrapper around sarama.ConsumerGroup.
 // It provides a way to consume messages from kafka topic in a consumer group.
 type KafkaConsumer struct {
-	cfg    Config
-	logger *zap.Logger
-
 	client        sarama.Client
 	consumerGroup sarama.ConsumerGroup
-	middlewares   []Middleware
+	logger        *zap.Logger
 	optionsCfg    *consumerOptionConfig
+	middlewares   []Middleware
+	cfg           Config
 }
 
 func NewKafkaConsumer(
@@ -193,6 +191,7 @@ func (c *KafkaConsumer) Stream(ctx context.Context, topic string) (<-chan Messag
 	go func() {
 		defer close(msgCh)
 		defer close(errCh)
+
 		if err := c.consumerGroup.Consume(ctx, []string{topic}, handler); err != nil {
 			errCh <- errors.WithStack(err)
 		}
@@ -234,11 +233,10 @@ type MessageHandler interface {
 
 // Wrapper from our domain handlers to sarama ConsumerGroupHandler to avoid abstraction leak.
 type saramaHandler struct {
-	topic          string
 	messageHandler MessageHandleFunc
 	logger         *zap.Logger
-
-	params *consumerOptionConfig
+	params         *consumerOptionConfig
+	topic          string
 }
 
 func newHandler(
@@ -316,16 +314,4 @@ func (h *saramaHandler) mapHeaders(headers []*sarama.RecordHeader) HeaderList {
 	}
 
 	return headerList
-}
-
-func partitions(client sarama.Client) func(ctx context.Context, topic string) ([]int32, error) {
-	var partitions []int32
-
-	return func(ctx context.Context, topic string) ([]int32, error) {
-		if len(partitions) > 0 {
-			return partitions, nil
-		}
-
-		return client.Partitions(topic)
-	}
 }

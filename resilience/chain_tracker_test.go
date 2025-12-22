@@ -2,7 +2,6 @@ package resilience
 
 import (
 	"context"
-
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -79,7 +78,6 @@ func TestKeyTracker_AddMessage(t *testing.T) {
 }
 
 func TestKeyTracker_ReleaseMessage(t *testing.T) {
-
 	var (
 		kt  = NewKeyTracker()
 		ctx = context.Background()
@@ -106,5 +104,5 @@ func TestKeyTracker_ReleaseMessage(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	assert.True(t, len(kt.lm) == 0)
+	assert.Equal(t, len(kt.lm), 0)
 }

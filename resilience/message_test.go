@@ -9,6 +9,7 @@ import (
 
 func TestHeaderList(t *testing.T) {
 	t.Parallel()
+
 	type args struct {
 		key string
 		val string
@@ -21,6 +22,7 @@ func TestHeaderList(t *testing.T) {
 	}
 
 	var hl HeaderList
+
 	for _, tt := range tests {
 		t.Run("s", func(t *testing.T) {
 			SetHeader[string](&hl, tt.key, tt.val)

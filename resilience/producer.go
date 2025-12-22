@@ -9,9 +9,9 @@ import (
 )
 
 type producer struct {
-	brokers        []string
 	saramaProducer sarama.SyncProducer
 	cfg            *sarama.Config
+	brokers        []string
 }
 
 func newProducer(cfg Config) (*producer, error) {
@@ -74,7 +74,7 @@ func (p *producer) CreateTopic(topic string) error {
 	if err != nil {
 		sErr, ok := err.(*sarama.TopicError)
 
-		if !(ok && sErr.Err == sarama.ErrTopicAlreadyExists) {
+		if !ok || sErr.Err != sarama.ErrTopicAlreadyExists {
 			return errTopicAlreadyExists
 		}
 

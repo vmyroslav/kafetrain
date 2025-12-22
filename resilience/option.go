@@ -3,13 +3,12 @@ package resilience
 import "time"
 
 type consumerOptionConfig struct {
-	StartFrom time.Time
-	EndsAt    time.Time
-	Offset    int64
-	Limit     int64
-	Silent    bool
-
+	StartFrom     time.Time
+	EndsAt        time.Time
 	partitionsMap map[int32]int64
+	Offset        int64
+	Limit         int64
+	Silent        bool
 }
 
 func newConsumerOptionConfig() *consumerOptionConfig {

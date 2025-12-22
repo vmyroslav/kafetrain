@@ -3,9 +3,8 @@ package resilience
 import (
 	"context"
 	"fmt"
-	"time"
-
 	"sync"
+	"time"
 
 	"github.com/IBM/sarama"
 	"github.com/google/uuid"
@@ -22,16 +21,13 @@ const (
 )
 
 type ErrorTracker struct {
-	cfg    Config
-	logger *zap.Logger
-
-	producer        *producer
 	comparator      MessageChainTracker
-	registry        *HandlerRegistry
 	backoffStrategy BackoffStrategy
-
-	errors chan error
-
+	logger          *zap.Logger
+	producer        *producer
+	registry        *HandlerRegistry
+	errors          chan error
+	cfg             Config
 	sync.Mutex
 }
 
@@ -92,7 +88,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 
 	defer func() { _ = admin.Close() }()
 
-	var g = errgroup.Group{}
+	g := errgroup.Group{}
 
 	g.Go(func() error {
 		err := admin.CreateTopic(t.retryTopic(topic), &sarama.TopicDetail{
@@ -106,7 +102,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 		if err != nil {
 			sErr, ok := err.(*sarama.TopicError)
 
-			if !(ok && sErr.Err == sarama.ErrTopicAlreadyExists) {
+			if !ok || sErr.Err != sarama.ErrTopicAlreadyExists {
 				return errors.WithStack(err)
 			}
 		}
@@ -126,7 +122,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 		if err != nil {
 			sErr, ok := err.(*sarama.TopicError) // nolint: errorlint
 
-			if !(ok && sErr.Err == sarama.ErrTopicAlreadyExists) {
+			if !ok || sErr.Err != sarama.ErrTopicAlreadyExists {
 				return errors.WithStack(err)
 			}
 		}
@@ -147,7 +143,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 		if err != nil {
 			sErr, ok := err.(*sarama.TopicError) // nolint: errorlint
 
-			if !(ok && sErr.Err == sarama.ErrTopicAlreadyExists) {
+			if !ok || sErr.Err != sarama.ErrTopicAlreadyExists {
 				return errors.WithStack(err)
 			}
 		}
@@ -178,6 +174,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 	defer cancel()
 
 	errCh := make(chan error, 1)
+
 	go func() {
 		errCh <- refillConsumer.Consume(refillCtx, t.redirectTopic(topic), newRedirectFillHandler(t))
 	}()
@@ -200,7 +197,6 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 		t.cfg,
 		t.logger,
 	)
-
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -219,7 +215,6 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 		t.cfg,
 		t.logger,
 	)
-
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -230,6 +225,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 
 	return nil
 }
+
 func (t *ErrorTracker) Errors() <-chan error {
 	return t.errors
 }
@@ -292,6 +288,7 @@ func (t *ErrorTracker) RedirectWithError(ctx context.Context, msg Message, lastE
 		SetHeader[int](&retryHeaders, HeaderRetryMax, t.cfg.MaxRetries)
 		SetHeader[time.Time](&retryHeaders, HeaderRetryNextTime, nextRetryTime)
 		SetHeader[time.Time](&retryHeaders, HeaderRetryOriginalTime, originalTime)
+
 		if lastError != nil {
 			SetHeader[string](&retryHeaders, HeaderRetryReason, lastError.Error())
 		}
@@ -418,6 +415,7 @@ func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg Message, lastError err
 	SetHeader[time.Time](&dlqHeaders, "x-dlq-timestamp", time.Now())
 	SetHeader[string](&dlqHeaders, "x-dlq-source-topic", originalTopic)
 	SetHeader[int](&dlqHeaders, "x-dlq-retry-attempts", attempt)
+
 	if !originalTime.IsZero() {
 		SetHeader[time.Time](&dlqHeaders, "x-dlq-original-failure-time", originalTime)
 	}
