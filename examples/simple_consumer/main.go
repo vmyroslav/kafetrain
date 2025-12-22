@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/vmyroslav/kafetrain"
-	"github.com/vmyroslav/kafetrain/examples/pkg/logging"
-	"go.uber.org/zap"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/vmyroslav/kafetrain/examples/pkg/logging"
+	"github.com/vmyroslav/kafetrain/resilience"
+	"go.uber.org/zap"
 )
 
 var topic string
@@ -23,7 +24,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	kCfg := kafetrain.Config{
+	kCfg := resilience.Config{
 		Brokers:           []string{"localhost:9092"},
 		Version:           "3.0.1",
 		GroupID:           "example-simple-consumer",
@@ -36,12 +37,12 @@ func main() {
 	}
 	topic = "hello-world"
 
-	kafkaConsumer, err := kafetrain.NewKafkaConsumer(
+	kafkaConsumer, err := resilience.NewKafkaConsumer(
 		kCfg,
 		logger,
 	)
 
-	kafkaConsumer.WithMiddlewares(kafetrain.NewLoggingMiddleware(logger))
+	kafkaConsumer.WithMiddlewares(resilience.NewLoggingMiddleware(logger))
 
 	if err != nil {
 		logger.Fatal("could not create kafka consumer", zap.Error(err))
@@ -50,7 +51,7 @@ func main() {
 	consumerErrors <- kafkaConsumer.Consume(
 		ctx,
 		topic,
-		kafetrain.MessageHandleFunc(func(ctx context.Context, msg kafetrain.Message) error {
+		resilience.MessageHandleFunc(func(ctx context.Context, msg resilience.Message) error {
 			logger.Info("message received", zap.String(
 				"key",
 				string(msg.Key),

@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/vmyroslav/kafetrain"
-	"github.com/vmyroslav/kafetrain/examples/pkg/logging"
-	"go.uber.org/zap"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/vmyroslav/kafetrain/examples/pkg/logging"
+	"github.com/vmyroslav/kafetrain/resilience"
+	"go.uber.org/zap"
 )
 
 var topic string
@@ -22,7 +23,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	kCfg := kafetrain.Config{
+	kCfg := resilience.Config{
 		Brokers:           []string{"localhost:9092"},
 		Version:           "3.0.1",
 		GroupID:           "example-simple-consumer",
@@ -34,7 +35,7 @@ func main() {
 		Silent:            true,
 	}
 
-	kafkaConsumer, err := kafetrain.NewKafkaConsumer(
+	kafkaConsumer, err := resilience.NewKafkaConsumer(
 		kCfg,
 		logger,
 	)
@@ -43,7 +44,7 @@ func main() {
 		logger.Fatal("could not create kafka consumer", zap.Error(err))
 	}
 
-	msgCh, errCh := kafkaConsumer.WithMiddlewares(kafetrain.NewFilterMiddleware(func(msg kafetrain.Message) bool {
+	msgCh, errCh := kafkaConsumer.WithMiddlewares(resilience.NewFilterMiddleware(func(msg resilience.Message) bool {
 		return (string(msg.Key)) != "1"
 	})).Stream(ctx, "hello-world")
 	go func() {

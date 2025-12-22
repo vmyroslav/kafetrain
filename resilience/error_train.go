@@ -1,16 +1,17 @@
-package kafetrain
+package resilience
 
 import (
 	"context"
 	"fmt"
 	"time"
 
+	"sync"
+
 	"github.com/IBM/sarama"
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
-	"sync"
 )
 
 const (

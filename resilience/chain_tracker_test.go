@@ -1,10 +1,12 @@
-package kafetrain
+package resilience
 
 import (
 	"context"
+
+	"testing"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"testing"
 )
 
 func TestKeyTracker_AddMessage(t *testing.T) {

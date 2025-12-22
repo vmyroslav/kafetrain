@@ -3,14 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
+
 	"github.com/vmyroslav/kafetrain/examples/pkg/logging"
+	"github.com/vmyroslav/kafetrain/resilience"
+
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 
 	_ "github.com/joho/godotenv/autoload"
-	"github.com/vmyroslav/kafetrain"
 	"go.uber.org/zap"
 )
 
@@ -29,10 +31,10 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	registry := kafetrain.NewHandlerRegistry()
+	registry := resilience.NewHandlerRegistry()
 	registry.Add(cfg.Topic, NewHandlerExample(logger))
 
-	t, err := kafetrain.NewTracker(cfg.KafkaConfig, logger, kafetrain.NewKeyTracker(), registry)
+	t, err := resilience.NewTracker(cfg.KafkaConfig, logger, resilience.NewKeyTracker(), registry)
 	if err != nil {
 		logger.Fatal("could not initialize error tracker", zap.Error(err))
 	}
@@ -41,15 +43,15 @@ func main() {
 		logger.Fatal("could not start error tracker", zap.Error(err))
 	}
 
-	kafkaConsumer, err := kafetrain.NewKafkaConsumer(cfg.KafkaConfig, logger)
+	kafkaConsumer, err := resilience.NewKafkaConsumer(cfg.KafkaConfig, logger)
 
 	if err != nil {
 		logger.Fatal("could not create kafka consumer", zap.Error(err))
 	}
 
 	kafkaConsumer.WithMiddlewares(
-		kafetrain.NewLoggingMiddleware(logger),
-		kafetrain.NewErrorHandlingMiddleware(t),
+		resilience.NewLoggingMiddleware(logger),
+		resilience.NewErrorHandlingMiddleware(t),
 	)
 
 	go func() {
@@ -69,7 +71,7 @@ func main() {
 	}
 }
 
-func shutdown(c kafetrain.Consumer, logger *zap.Logger) {
+func shutdown(c resilience.Consumer, logger *zap.Logger) {
 	var wg sync.WaitGroup
 
 	wg.Add(1)

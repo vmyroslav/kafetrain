@@ -1,4 +1,4 @@
-package kafetrain
+package resilience
 
 import (
 	"context"

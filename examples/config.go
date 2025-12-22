@@ -2,15 +2,16 @@ package main
 
 import (
 	"fmt"
+
 	"github.com/kelseyhightower/envconfig"
-	"github.com/vmyroslav/kafetrain"
 	"github.com/vmyroslav/kafetrain/examples/pkg/logging"
+	"github.com/vmyroslav/kafetrain/resilience"
 )
 
 type Config struct {
 	Topic string `envconfig:"KAFKA_TOPIC" required:"true"`
 
-	KafkaConfig  kafetrain.Config
+	KafkaConfig  resilience.Config
 	LoggerConfig logging.Config
 }
 

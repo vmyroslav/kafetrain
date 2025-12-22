@@ -1,10 +1,11 @@
-package kafetrain
+package resilience
 
 import (
 	"context"
-	"go.uber.org/zap"
 	"log"
 	"time"
+
+	"go.uber.org/zap"
 
 	"github.com/pkg/errors"
 )

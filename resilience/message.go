@@ -1,4 +1,4 @@
-package kafetrain
+package resilience
 
 import (
 	"bytes"
@@ -29,6 +29,21 @@ type Message struct {
 	partition int32
 
 	Timestamp time.Time
+}
+
+// Topic returns the topic name of the message.
+func (m Message) Topic() string {
+	return m.topic
+}
+
+// Offset returns the offset of the message within its partition.
+func (m Message) Offset() int64 {
+	return m.offset
+}
+
+// Partition returns the partition number of the message.
+func (m Message) Partition() int32 {
+	return m.partition
 }
 
 type Header struct {
@@ -85,7 +100,7 @@ func GetHeaderValue[T any](h *HeaderList, key string) (T, bool) {
 func SetHeader[T any](h *HeaderList, key string, value T) {
 	var valStr string
 
-	// Convert T to string based on its type
+	// convert T to string based on its type
 	switch v := any(value).(type) {
 	case string:
 		valStr = v
@@ -99,7 +114,7 @@ func SetHeader[T any](h *HeaderList, key string, value T) {
 
 	keyBytes := []byte(key)
 
-	// Check if the key already exists to update it
+	// check if the key already exists to update it
 	for i, hdr := range *h {
 		if bytes.Equal(hdr.Key, keyBytes) {
 			(*h)[i].Value = []byte(valStr)
@@ -107,7 +122,7 @@ func SetHeader[T any](h *HeaderList, key string, value T) {
 		}
 	}
 
-	// If not found, append a new header
+	// if not found, append a new header
 	*h = append(*h, Header{
 		Key:   keyBytes,
 		Value: []byte(valStr),
