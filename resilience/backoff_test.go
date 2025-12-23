@@ -42,6 +42,8 @@ func TestExponentialBackoff_NextDelay(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			delay := backoff.NextDelay(tc.attempt)
 			assert.Equal(t, tc.expected, delay, "delay for attempt %d", tc.attempt)
 		})
@@ -153,6 +155,8 @@ func TestLinearBackoff_NextDelay(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			delay := backoff.NextDelay(tc.attempt)
 			assert.Equal(t, tc.expected, delay, "delay for attempt %d", tc.attempt)
 		})
@@ -321,11 +325,11 @@ func TestExponentialBackoff_InvalidInitialDelay(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewExponentialBackoffWithConfig(0, 1*time.Second, 2.0)
-	assert.Error(t, err, "should return error when initialDelay is 0")
+	require.Error(t, err, "should return error when initialDelay is 0")
 	assert.Contains(t, err.Error(), "initialDelay must be > 0")
 
 	_, err = NewExponentialBackoffWithConfig(-1*time.Second, 1*time.Second, 2.0)
-	assert.Error(t, err, "should return error when initialDelay is negative")
+	require.Error(t, err, "should return error when initialDelay is negative")
 	assert.Contains(t, err.Error(), "initialDelay must be > 0")
 }
 
@@ -333,7 +337,7 @@ func TestExponentialBackoff_InvalidMaxDelay(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewExponentialBackoffWithConfig(10*time.Second, 5*time.Second, 2.0)
-	assert.Error(t, err, "should return error when maxDelay < initialDelay")
+	require.Error(t, err, "should return error when maxDelay < initialDelay")
 	assert.Contains(t, err.Error(), "maxDelay")
 	assert.Contains(t, err.Error(), "initialDelay")
 }
@@ -342,11 +346,11 @@ func TestExponentialBackoff_InvalidMultiplier(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewExponentialBackoffWithConfig(1*time.Second, 5*time.Second, 0.5)
-	assert.Error(t, err, "should return error when multiplier < 1.0")
+	require.Error(t, err, "should return error when multiplier < 1.0")
 	assert.Contains(t, err.Error(), "multiplier must be >= 1.0")
 
 	_, err = NewExponentialBackoffWithConfig(1*time.Second, 5*time.Second, 0)
-	assert.Error(t, err, "should return error when multiplier is 0")
+	require.Error(t, err, "should return error when multiplier is 0")
 	assert.Contains(t, err.Error(), "multiplier must be >= 1.0")
 }
 
@@ -354,11 +358,11 @@ func TestConstantBackoff_InvalidDelay(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewConstantBackoff(0)
-	assert.Error(t, err, "should return error when delay is 0")
+	require.Error(t, err, "should return error when delay is 0")
 	assert.Contains(t, err.Error(), "delay must be > 0")
 
 	_, err = NewConstantBackoff(-1 * time.Second)
-	assert.Error(t, err, "should return error when delay is negative")
+	require.Error(t, err, "should return error when delay is negative")
 	assert.Contains(t, err.Error(), "delay must be > 0")
 }
 
@@ -366,11 +370,11 @@ func TestLinearBackoff_InvalidInitialDelay(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewLinearBackoffWithConfig(0, 1*time.Second, 5*time.Second)
-	assert.Error(t, err, "should return error when initialDelay is 0")
+	require.Error(t, err, "should return error when initialDelay is 0")
 	assert.Contains(t, err.Error(), "initialDelay must be > 0")
 
 	_, err = NewLinearBackoffWithConfig(-1*time.Second, 1*time.Second, 5*time.Second)
-	assert.Error(t, err, "should return error when initialDelay is negative")
+	require.Error(t, err, "should return error when initialDelay is negative")
 	assert.Contains(t, err.Error(), "initialDelay must be > 0")
 }
 
@@ -378,7 +382,7 @@ func TestLinearBackoff_InvalidIncrement(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewLinearBackoffWithConfig(1*time.Second, -1*time.Second, 5*time.Second)
-	assert.Error(t, err, "should return error when increment is negative")
+	require.Error(t, err, "should return error when increment is negative")
 	assert.Contains(t, err.Error(), "increment must be >= 0")
 }
 
@@ -386,7 +390,7 @@ func TestLinearBackoff_InvalidMaxDelay(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewLinearBackoffWithConfig(10*time.Second, 1*time.Second, 5*time.Second)
-	assert.Error(t, err, "should return error when maxDelay < initialDelay")
+	require.Error(t, err, "should return error when maxDelay < initialDelay")
 	assert.Contains(t, err.Error(), "maxDelay")
 	assert.Contains(t, err.Error(), "initialDelay")
 }

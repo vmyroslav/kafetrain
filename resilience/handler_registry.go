@@ -4,7 +4,7 @@ import "sync"
 
 type HandlerRegistry struct {
 	handlers map[string]MessageHandler
-	sync.RWMutex
+	mu       sync.RWMutex
 }
 
 func NewHandlerRegistry() *HandlerRegistry {
@@ -14,15 +14,15 @@ func NewHandlerRegistry() *HandlerRegistry {
 }
 
 func (r *HandlerRegistry) Add(topic string, handler MessageHandler) {
-	r.Lock()
-	defer r.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	r.handlers[topic] = handler
 }
 
 func (r *HandlerRegistry) Get(topic string) (MessageHandler, bool) {
-	r.RLock()
-	defer r.RUnlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	handler, ok := r.handlers[topic]
 

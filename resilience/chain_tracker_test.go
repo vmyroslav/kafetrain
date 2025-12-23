@@ -59,15 +59,15 @@ func TestKeyTracker_AddMessage(t *testing.T) {
 	)
 
 	for _, msg := range msgs {
-		_, err = kt.AddMessage(ctx, msg)
+		_, err = kt.AddMessage(ctx, &msg)
 		require.NoError(t, err)
 	}
 
 	for _, msg := range msgs {
-		assert.True(t, kt.IsRelated(ctx, msg))
+		assert.True(t, kt.IsRelated(ctx, &msg))
 	}
 
-	assert.False(t, kt.IsRelated(ctx, Message{
+	assert.False(t, kt.IsRelated(ctx, &Message{
 		Key:       []byte("new-key"),
 		Payload:   nil,
 		Headers:   nil,
@@ -84,7 +84,7 @@ func TestKeyTracker_ReleaseMessage(t *testing.T) {
 		err error
 	)
 
-	_, err = kt.AddMessage(ctx, Message{
+	_, err = kt.AddMessage(ctx, &Message{
 		Key:       []byte("test-1"),
 		Payload:   nil,
 		Headers:   nil,
@@ -94,7 +94,7 @@ func TestKeyTracker_ReleaseMessage(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	err = kt.ReleaseMessage(ctx, Message{
+	err = kt.ReleaseMessage(ctx, &Message{
 		Key:       []byte("test-1"),
 		Payload:   nil,
 		Headers:   nil,
@@ -104,5 +104,5 @@ func TestKeyTracker_ReleaseMessage(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	assert.Equal(t, len(kt.lm), 0)
+	assert.Empty(t, kt.lm)
 }

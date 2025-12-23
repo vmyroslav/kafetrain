@@ -16,7 +16,7 @@ func NewHandlerExample(logger *zap.Logger) *HandlerExample {
 	return &HandlerExample{logger: logger}
 }
 
-func (h *HandlerExample) Handle(ctx context.Context, msg resilience.Message) error {
+func (h *HandlerExample) Handle(_ context.Context, msg *resilience.Message) error {
 	h.logger.Info(
 		"handle",
 		zap.String("key", string(msg.Key)),

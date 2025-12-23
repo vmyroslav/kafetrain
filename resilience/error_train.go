@@ -3,7 +3,6 @@ package resilience
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/IBM/sarama"
@@ -14,6 +13,7 @@ import (
 )
 
 const (
+	// HeaderTopic stores the original topic name
 	HeaderTopic = "topic"
 	headerID    = "id"
 	headerRetry = "retry"
@@ -27,12 +27,11 @@ type ErrorTracker struct {
 	producer        *producer
 	registry        *HandlerRegistry
 	errors          chan error
-	cfg             Config
-	sync.Mutex
+	cfg             *Config
 }
 
 func NewTracker(
-	cfg Config,
+	cfg *Config,
 	logger *zap.Logger,
 	comparator MessageChainTracker,
 	registry *HandlerRegistry,
@@ -41,7 +40,7 @@ func NewTracker(
 }
 
 func NewTrackerWithBackoff(
-	cfg Config,
+	cfg *Config,
 	logger *zap.Logger,
 	comparator MessageChainTracker,
 	registry *HandlerRegistry,
@@ -74,13 +73,24 @@ func NewTrackerWithBackoff(
 }
 
 func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
-	// init sarama Config and all dependencies for ErrorTracker
+	if err := t.ensureTopicsExist(topic); err != nil {
+		return err
+	}
+
+	if err := t.restoreState(ctx, topic); err != nil {
+		return err
+	}
+
+	return t.startConsumers(ctx, topic)
+}
+
+func (t *ErrorTracker) ensureTopicsExist(topic string) error {
 	saramaConfig := sarama.NewConfig()
 	saramaConfig.Producer.Return.Successes = true
 	saramaConfig.Producer.Return.Errors = true
 	saramaConfig.Net.WriteTimeout = 1 * time.Second
 	saramaConfig.Metadata.Retry.Max = 5
-	// Create redirect and Retry topics if not exist
+
 	admin, err := sarama.NewClusterAdmin(t.cfg.Brokers, saramaConfig)
 	if err != nil {
 		return errors.WithStack(err)
@@ -89,87 +99,71 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 	defer func() { _ = admin.Close() }()
 
 	g := errgroup.Group{}
-
-	g.Go(func() error {
-		err := admin.CreateTopic(t.retryTopic(topic), &sarama.TopicDetail{
-			NumPartitions:     t.cfg.RetryTopicPartitions,
-			ReplicationFactor: 1,
-			ConfigEntries: map[string]*string{
-				"cleanup.policy": toPtr("compact"),
-				"segment.ms":     toPtr("100"),
+	topics := []struct {
+		detail *sarama.TopicDetail
+		name   string
+	}{
+		{
+			name: t.retryTopic(topic),
+			detail: &sarama.TopicDetail{
+				NumPartitions:     t.cfg.RetryTopicPartitions,
+				ReplicationFactor: 1,
+				ConfigEntries: map[string]*string{
+					"cleanup.policy": toPtr("compact"),
+					"segment.ms":     toPtr("100"),
+				},
 			},
-		}, false)
-		if err != nil {
-			sErr, ok := err.(*sarama.TopicError)
-
-			if !ok || sErr.Err != sarama.ErrTopicAlreadyExists {
-				return errors.WithStack(err)
-			}
-		}
-
-		return nil
-	})
-
-	g.Go(func() error {
-		err := admin.CreateTopic(t.redirectTopic(topic), &sarama.TopicDetail{
-			NumPartitions:     t.cfg.RetryTopicPartitions,
-			ReplicationFactor: 1,
-			ConfigEntries: map[string]*string{
-				"cleanup.policy": toPtr("compact"),
-				"segment.ms":     toPtr("100"),
+		},
+		{
+			name: t.redirectTopic(topic),
+			detail: &sarama.TopicDetail{
+				NumPartitions:     t.cfg.RetryTopicPartitions,
+				ReplicationFactor: 1,
+				ConfigEntries: map[string]*string{
+					"cleanup.policy": toPtr("compact"),
+					"segment.ms":     toPtr("100"),
+				},
 			},
-		}, false)
-		if err != nil {
-			sErr, ok := err.(*sarama.TopicError) // nolint: errorlint
-
-			if !ok || sErr.Err != sarama.ErrTopicAlreadyExists {
-				return errors.WithStack(err)
-			}
-		}
-
-		return nil
-	})
-
-	// Create DLQ topic for messages that exceed max retries
-	g.Go(func() error {
-		err := admin.CreateTopic(t.dlqTopic(topic), &sarama.TopicDetail{
-			NumPartitions:     t.cfg.RetryTopicPartitions,
-			ReplicationFactor: 1,
-			ConfigEntries: map[string]*string{
-				"cleanup.policy": toPtr("delete"), // DLQ uses delete, not compact
-				"retention.ms":   toPtr("-1"),     // Infinite retention for DLQ
+		},
+		{
+			name: t.dlqTopic(topic),
+			detail: &sarama.TopicDetail{
+				NumPartitions:     t.cfg.RetryTopicPartitions,
+				ReplicationFactor: 1,
+				ConfigEntries: map[string]*string{
+					"cleanup.policy": toPtr("delete"),
+					"retention.ms":   toPtr("-1"),
+				},
 			},
-		}, false)
-		if err != nil {
-			sErr, ok := err.(*sarama.TopicError) // nolint: errorlint
-
-			if !ok || sErr.Err != sarama.ErrTopicAlreadyExists {
-				return errors.WithStack(err)
-			}
-		}
-
-		return nil
-	})
-
-	err = g.Wait()
-	if err != nil {
-		return errors.WithStack(err)
+		},
 	}
 
-	// Restore state by replaying redirect topic
-	// Create temporary consumer group to replay all messages from beginning
-	refillCfg := t.cfg
+	for _, tc := range topics {
+		g.Go(func() error {
+			err := admin.CreateTopic(tc.name, tc.detail, false)
+			if err != nil {
+				sErr, ok := err.(*sarama.TopicError)
+				if !ok || sErr.Err != sarama.ErrTopicAlreadyExists {
+					return errors.WithStack(err)
+				}
+			}
+
+			return nil
+		})
+	}
+
+	return errors.WithStack(g.Wait())
+}
+
+func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
+	refillCfg := *t.cfg
 	refillCfg.GroupID = uuid.New().String()
 
-	refillConsumer, err := NewKafkaConsumer(
-		refillCfg,
-		t.logger,
-	)
+	refillConsumer, err := NewKafkaConsumer(&refillCfg, t.logger)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
-	// Consume for 5 seconds to replay all existing messages
 	refillCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -179,42 +173,44 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
 		errCh <- refillConsumer.Consume(refillCtx, t.redirectTopic(topic), newRedirectFillHandler(t))
 	}()
 
-	// Wait for timeout or error
 	<-refillCtx.Done()
 
 	if err := refillConsumer.Close(); err != nil {
 		return errors.WithStack(err)
 	}
 
-	// Clean up temporary consumer group
+	saramaConfig := sarama.NewConfig()
+
+	admin, err := sarama.NewClusterAdmin(t.cfg.Brokers, saramaConfig)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	defer func() { _ = admin.Close() }()
+
 	if err := admin.DeleteConsumerGroup(refillCfg.GroupID); err != nil {
 		return errors.WithStack(err)
 	}
 
-	// Start retry consumer to process failed messages
+	return nil
+}
 
-	retryConsumer, err := NewKafkaConsumer(
-		t.cfg,
-		t.logger,
-	)
+func (t *ErrorTracker) startConsumers(ctx context.Context, topic string) error {
+	retryConsumer, err := NewKafkaConsumer(t.cfg, t.logger)
 	if err != nil {
 		return errors.WithStack(err)
 	}
 
 	handler, ok := t.registry.Get(topic)
 	if !ok || handler == nil {
-		return errors.New(fmt.Sprintf("handler for topic: %s not found", topic))
+		return fmt.Errorf("handler for topic: %s not found", topic)
 	}
 
 	go func() {
-		errCh <- retryConsumer.WithMiddlewares(NewRetryMiddleware(t)).Consume(ctx, t.retryTopic(topic), handler)
+		_ = retryConsumer.WithMiddlewares(NewRetryMiddleware(t)).Consume(ctx, t.retryTopic(topic), handler)
 	}()
 
-	// Start redirect consumer to handle tombstone events and cleanup tracking state
-	redirectConsumer, err := NewKafkaConsumer(
-		t.cfg,
-		t.logger,
-	)
+	redirectConsumer, err := NewKafkaConsumer(t.cfg, t.logger)
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -230,31 +226,25 @@ func (t *ErrorTracker) Errors() <-chan error {
 	return t.errors
 }
 
-func (t *ErrorTracker) IsRelated(topic string, msg Message) bool {
+func (t *ErrorTracker) IsRelated(_ string, msg *Message) bool {
 	return t.comparator.IsRelated(context.Background(), msg)
 }
 
-func (t *ErrorTracker) Redirect(ctx context.Context, msg Message) error {
+func (t *ErrorTracker) Redirect(ctx context.Context, msg *Message) error {
 	return t.RedirectWithError(ctx, msg, nil)
 }
 
-func (t *ErrorTracker) RedirectWithError(ctx context.Context, msg Message, lastError error) error {
-	g, ctx := errgroup.WithContext(ctx)
-
-	// Get current retry attempt (default to 0 for first failure)
+func (t *ErrorTracker) RedirectWithError(ctx context.Context, msg *Message, lastError error) error {
+	// Calculate retry metadata
 	currentAttempt, _ := GetHeaderValue[int](&msg.Headers, HeaderRetryAttempt)
 
-	// Get original failure time (or set it now for first failure)
 	originalTime, ok := GetHeaderValue[time.Time](&msg.Headers, HeaderRetryOriginalTime)
 	if !ok {
 		originalTime = time.Now()
 	}
 
-	// Calculate next retry time based on backoff strategy
 	nextDelay := t.backoffStrategy.NextDelay(currentAttempt)
 	nextRetryTime := time.Now().Add(nextDelay)
-
-	// Increment attempt counter
 	nextAttempt := currentAttempt + 1
 
 	id, err := t.comparator.AddMessage(ctx, msg)
@@ -270,72 +260,81 @@ func (t *ErrorTracker) RedirectWithError(ctx context.Context, msg Message, lastE
 		zap.Time("next_retry_time", nextRetryTime),
 	)
 
+	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		// Copy original message headers
-		retryHeaders := make(HeaderList, 0, len(msg.Headers)+6)
-		for _, h := range msg.Headers {
-			// Skip old retry headers to avoid duplicates
-			key := string(h.Key)
-			if key != HeaderRetryAttempt && key != HeaderRetryMax &&
-				key != HeaderRetryNextTime && key != HeaderRetryOriginalTime &&
-				key != HeaderRetryReason && key != headerID && key != headerRetry {
-				retryHeaders = append(retryHeaders, h)
-			}
-		}
-
-		// Add/update retry metadata headers
-		SetHeader[int](&retryHeaders, HeaderRetryAttempt, nextAttempt)
-		SetHeader[int](&retryHeaders, HeaderRetryMax, t.cfg.MaxRetries)
-		SetHeader[time.Time](&retryHeaders, HeaderRetryNextTime, nextRetryTime)
-		SetHeader[time.Time](&retryHeaders, HeaderRetryOriginalTime, originalTime)
-
-		if lastError != nil {
-			SetHeader[string](&retryHeaders, HeaderRetryReason, lastError.Error())
-		}
-
-		// Add internal tracking headers
-		SetHeader[string](&retryHeaders, headerID, id)
-		SetHeader[string](&retryHeaders, headerRetry, "true")
-		SetHeader[string](&retryHeaders, HeaderTopic, msg.topic)
-
-		retryMsg := Message{
-			topic:   t.retryTopic(msg.topic),
-			Key:     msg.Key,
-			Payload: msg.Payload,
-			Headers: retryHeaders,
-		}
-
-		return t.producer.publish(ctx, retryMsg)
+		return t.publishToRetry(ctx, msg, id, nextAttempt, nextRetryTime, originalTime, lastError)
 	})
 
 	g.Go(func() error {
-		newMessage := Message{
-			topic:   t.redirectTopic(msg.topic),
-			Key:     []byte(id),
-			Payload: []byte(id),
-			Headers: HeaderList{
-				{
-					Key:   []byte(HeaderTopic),
-					Value: []byte(msg.topic),
-				},
-				{
-					Key:   []byte("key"),
-					Value: msg.Key,
-				},
-			},
-		}
-
-		return t.producer.publish(ctx, newMessage)
+		return t.publishToRedirect(ctx, msg, id)
 	})
 
-	if err := g.Wait(); err != nil {
-		return errors.WithStack(err)
-	}
-
-	return nil
+	return errors.WithStack(g.Wait())
 }
 
-func (t *ErrorTracker) Free(ctx context.Context, msg Message) error {
+func (t *ErrorTracker) publishToRetry(
+	ctx context.Context,
+	msg *Message,
+	id string,
+	nextAttempt int,
+	nextRetryTime time.Time,
+	originalTime time.Time,
+	lastError error,
+) error {
+	retryHeaders := make(HeaderList, 0, len(msg.Headers)+6)
+	for _, h := range msg.Headers {
+		key := string(h.Key)
+		if key != HeaderRetryAttempt && key != HeaderRetryMax &&
+			key != HeaderRetryNextTime && key != HeaderRetryOriginalTime &&
+			key != HeaderRetryReason && key != headerID && key != headerRetry {
+			retryHeaders = append(retryHeaders, h)
+		}
+	}
+
+	SetHeader[int](&retryHeaders, HeaderRetryAttempt, nextAttempt)
+	SetHeader[int](&retryHeaders, HeaderRetryMax, t.cfg.MaxRetries)
+	SetHeader[time.Time](&retryHeaders, HeaderRetryNextTime, nextRetryTime)
+	SetHeader[time.Time](&retryHeaders, HeaderRetryOriginalTime, originalTime)
+
+	if lastError != nil {
+		SetHeader[string](&retryHeaders, HeaderRetryReason, lastError.Error())
+	}
+
+	SetHeader[string](&retryHeaders, headerID, id)
+	SetHeader[string](&retryHeaders, headerRetry, "true")
+	SetHeader[string](&retryHeaders, HeaderTopic, msg.topic)
+
+	retryMsg := &Message{
+		topic:   t.retryTopic(msg.topic),
+		Key:     msg.Key,
+		Payload: msg.Payload,
+		Headers: retryHeaders,
+	}
+
+	return t.producer.publish(ctx, retryMsg)
+}
+
+func (t *ErrorTracker) publishToRedirect(ctx context.Context, msg *Message, id string) error {
+	newMessage := &Message{
+		topic:   t.redirectTopic(msg.topic),
+		Key:     []byte(id),
+		Payload: []byte(id),
+		Headers: HeaderList{
+			{
+				Key:   []byte(HeaderTopic),
+				Value: []byte(msg.topic),
+			},
+			{
+				Key:   []byte("key"),
+				Value: msg.Key,
+			},
+		},
+	}
+
+	return t.producer.publish(ctx, newMessage)
+}
+
+func (t *ErrorTracker) Free(ctx context.Context, msg *Message) error {
 	id, ok := GetHeaderValue[string](&msg.Headers, headerRetry)
 	if !ok {
 		return errors.New("topic id not found")
@@ -346,7 +345,7 @@ func (t *ErrorTracker) Free(ctx context.Context, msg Message) error {
 		return errors.New("topic header not found")
 	}
 
-	newMessage := Message{
+	newMessage := &Message{
 		topic:   t.redirectTopic(topic),
 		Key:     []byte(id),
 		Payload: nil,
@@ -365,7 +364,7 @@ func (t *ErrorTracker) Free(ctx context.Context, msg Message) error {
 	return t.producer.publish(ctx, newMessage)
 }
 
-func (t *ErrorTracker) ReleaseMessage(ctx context.Context, msg Message) error {
+func (t *ErrorTracker) ReleaseMessage(ctx context.Context, msg *Message) error {
 	topic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
 	if !ok {
 		return errors.New("topic header not found")
@@ -376,7 +375,7 @@ func (t *ErrorTracker) ReleaseMessage(ctx context.Context, msg Message) error {
 		return errors.New("key header not found")
 	}
 
-	if err := t.comparator.ReleaseMessage(ctx, Message{
+	if err := t.comparator.ReleaseMessage(ctx, &Message{
 		Key:   []byte(key),
 		topic: topic,
 	}); err != nil {
@@ -388,7 +387,7 @@ func (t *ErrorTracker) ReleaseMessage(ctx context.Context, msg Message) error {
 
 // SendToDLQ sends a message that has exceeded max retries to the Dead Letter Queue.
 // It adds DLQ metadata headers and publishes to the DLQ topic.
-func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg Message, lastError error) error {
+func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg *Message, lastError error) error {
 	// Get original topic from headers
 	originalTopic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
 	if !ok {
@@ -420,7 +419,7 @@ func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg Message, lastError err
 		SetHeader[time.Time](&dlqHeaders, "x-dlq-original-failure-time", originalTime)
 	}
 
-	dlqMsg := Message{
+	dlqMsg := &Message{
 		topic:   t.dlqTopic(originalTopic),
 		Key:     msg.Key,
 		Payload: msg.Payload,
@@ -450,6 +449,84 @@ func (t *ErrorTracker) dlqTopic(topic string) string {
 	return t.cfg.DLQTopicPrefix + "_" + topic
 }
 
+func (t *ErrorTracker) HandleMaxRetriesExceeded(ctx context.Context, message *Message, currentAttempt, maxRetries int) error {
+	t.logger.Warn("max retries exceeded, sending to DLQ",
+		zap.String("topic", message.topic),
+		zap.Int("current_attempt", currentAttempt),
+		zap.Int("max_retries", maxRetries),
+	)
+
+	// Get the last error reason from headers
+	lastErrorReason, _ := GetHeaderValue[string](&message.Headers, HeaderRetryReason)
+
+	lastError := errors.New(lastErrorReason)
+	if lastErrorReason == "" {
+		lastError = errors.New("max retries exceeded")
+	}
+
+	// Send to DLQ
+	if err := t.SendToDLQ(ctx, message, lastError); err != nil {
+		t.logger.Error("failed to send message to DLQ",
+			zap.String("topic", message.topic),
+			zap.Error(err),
+		)
+
+		return errors.Wrap(err, "failed to send message to DLQ")
+	}
+
+	// Still publish tombstone to remove from tracking
+	if err := t.Free(ctx, message); err != nil {
+		t.logger.Error("failed to publish tombstone after DLQ",
+			zap.String("topic", message.topic),
+			zap.Error(err),
+		)
+
+		return errors.Wrap(err, "failed to free message after DLQ")
+	}
+
+	t.logger.Info("successfully sent to DLQ and freed from tracking",
+		zap.String("topic", message.topic),
+	)
+
+	return nil
+}
+
+func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, message *Message) error {
+	// Check if this message has a scheduled retry time
+	nextRetryTime, ok := GetHeaderValue[time.Time](&message.Headers, HeaderRetryNextTime)
+	if !ok {
+		return nil
+	}
+
+	now := time.Now()
+	if !now.Before(nextRetryTime) {
+		return nil
+	}
+
+	// Calculate remaining delay
+	delay := nextRetryTime.Sub(now)
+
+	t.logger.Debug("waiting before retry processing",
+		zap.String("topic", message.topic),
+		zap.Duration("delay", delay),
+		zap.Time("scheduled_for", nextRetryTime),
+	)
+
+	// Wait until the scheduled time or context is canceled
+	select {
+	case <-time.After(delay):
+		// Continue processing after delay
+		t.logger.Debug("delay complete, processing message",
+			zap.String("topic", message.topic),
+		)
+
+		return nil
+	case <-ctx.Done():
+		// Context canceled during delay
+		return errors.WithStack(ctx.Err())
+	}
+}
+
 type redirectFillHandler struct {
 	t *ErrorTracker
 }
@@ -458,7 +535,7 @@ func newRedirectFillHandler(t *ErrorTracker) *redirectFillHandler {
 	return &redirectFillHandler{t: t}
 }
 
-func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
+func (r *redirectFillHandler) Handle(ctx context.Context, msg *Message) error {
 	// Skip tombstone events (they represent already-completed retries)
 	if msg.Payload == nil {
 		return nil
@@ -476,7 +553,7 @@ func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
 	}
 
 	// Reconstruct original message to restore to comparator
-	originalMsg := Message{
+	originalMsg := &Message{
 		topic: originalTopic,
 		Key:   []byte(originalKey),
 	}
@@ -498,7 +575,7 @@ func NewRedirectHandler(t *ErrorTracker) *RedirectHandler {
 	return &RedirectHandler{t: t}
 }
 
-func (r *RedirectHandler) Handle(ctx context.Context, msg Message) error {
+func (r *RedirectHandler) Handle(ctx context.Context, msg *Message) error {
 	if msg.Payload != nil {
 		return nil
 	}

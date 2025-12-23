@@ -10,7 +10,8 @@ import (
 func TestHandlerRegistry(t *testing.T) {
 	t.Parallel()
 
-	topic := "test"
+	const topic = "test"
+
 	hr := NewHandlerRegistry()
 	handler := new(dummyHandler)
 
@@ -29,10 +30,11 @@ func TestHandlerRegistry(t *testing.T) {
 func TestHandlerRegistryFunc(t *testing.T) {
 	t.Parallel()
 
-	topic := "test"
+	const topic = "test"
+
 	hr := NewHandlerRegistry()
 
-	handler := MessageHandleFunc(func(ctx context.Context, message Message) error {
+	handler := MessageHandleFunc(func(_ context.Context, _ *Message) error {
 		return nil
 	})
 
@@ -51,6 +53,6 @@ func TestHandlerRegistryFunc(t *testing.T) {
 
 type dummyHandler struct{}
 
-func (d *dummyHandler) Handle(_ context.Context, _ Message) error {
+func (d *dummyHandler) Handle(_ context.Context, _ *Message) error {
 	return nil
 }

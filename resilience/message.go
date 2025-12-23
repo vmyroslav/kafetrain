@@ -8,11 +8,16 @@ import (
 )
 
 const (
-	HeaderRetryAttempt      = "x-retry-attempt"       // Current retry count
-	HeaderRetryMax          = "x-retry-max"           // Maximum retries allowed
-	HeaderRetryNextTime     = "x-retry-next-time"     // Next retry timestamp (Unix)
-	HeaderRetryOriginalTime = "x-retry-original-time" // First failure timestamp (Unix)
-	HeaderRetryReason       = "x-retry-reason"        // Error message from last failure
+	// HeaderRetryAttempt current retry count
+	HeaderRetryAttempt = "x-retry-attempt"
+	// HeaderRetryMax maximum retries allowed
+	HeaderRetryMax = "x-retry-max"
+	// HeaderRetryNextTime next retry timestamp (Unix)
+	HeaderRetryNextTime = "x-retry-next-time"
+	// HeaderRetryOriginalTime first failure timestamp (Unix)
+	HeaderRetryOriginalTime = "x-retry-original-time"
+	// HeaderRetryReason error message from last failure
+	HeaderRetryReason = "x-retry-reason"
 )
 
 // Message generic kafka message. TODO: add generic type for marshaling
@@ -27,17 +32,17 @@ type Message struct {
 }
 
 // Topic returns the topic name of the message.
-func (m Message) Topic() string {
+func (m *Message) Topic() string {
 	return m.topic
 }
 
 // Offset returns the offset of the message within its partition.
-func (m Message) Offset() int64 {
+func (m *Message) Offset() int64 {
 	return m.offset
 }
 
 // Partition returns the partition number of the message.
-func (m Message) Partition() int32 {
+func (m *Message) Partition() int32 {
 	return m.partition
 }
 
@@ -72,21 +77,27 @@ func GetHeaderValue[T any](h *HeaderList, key string) (T, bool) {
 	var anyVal any = zero
 	switch anyVal.(type) {
 	case string:
-		return any(val).(T), true
+		v, ok := any(val).(T)
+
+		return v, ok
 	case int:
 		i, err := strconv.Atoi(val)
 		if err != nil {
 			return zero, false
 		}
 
-		return any(i).(T), true
+		v, ok := any(i).(T)
+
+		return v, ok
 	case time.Time:
 		unix, err := strconv.ParseInt(val, 10, 64)
 		if err != nil {
 			return zero, false
 		}
 
-		return any(time.Unix(unix, 0)).(T), true
+		v, ok := any(time.Unix(unix, 0)).(T)
+
+		return v, ok
 	default:
 		return zero, false
 	}

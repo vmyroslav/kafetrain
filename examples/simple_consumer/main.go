@@ -38,7 +38,7 @@ func main() {
 	topic = "hello-world"
 
 	kafkaConsumer, err := resilience.NewKafkaConsumer(
-		kCfg,
+		&kCfg,
 		logger,
 	)
 
@@ -51,7 +51,7 @@ func main() {
 	consumerErrors <- kafkaConsumer.Consume(
 		ctx,
 		topic,
-		resilience.MessageHandleFunc(func(ctx context.Context, msg resilience.Message) error {
+		resilience.MessageHandleFunc(func(_ context.Context, msg *resilience.Message) error {
 			logger.Info("message received", zap.String(
 				"key",
 				string(msg.Key),

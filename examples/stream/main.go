@@ -12,8 +12,6 @@ import (
 	"go.uber.org/zap"
 )
 
-var topic string
-
 func main() {
 	killSignal := make(chan os.Signal, 1)
 	signal.Notify(killSignal, syscall.SIGINT, syscall.SIGTERM)
@@ -36,14 +34,14 @@ func main() {
 	}
 
 	kafkaConsumer, err := resilience.NewKafkaConsumer(
-		kCfg,
+		&kCfg,
 		logger,
 	)
 	if err != nil {
 		logger.Fatal("could not create kafka consumer", zap.Error(err))
 	}
 
-	msgCh, errCh := kafkaConsumer.WithMiddlewares(resilience.NewFilterMiddleware(func(msg resilience.Message) bool {
+	msgCh, errCh := kafkaConsumer.WithMiddlewares(resilience.NewFilterMiddleware(func(msg *resilience.Message) bool {
 		return (string(msg.Key)) != "1"
 	})).Stream(ctx, "hello-world")
 

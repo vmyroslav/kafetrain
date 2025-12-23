@@ -21,10 +21,12 @@ func TestHeaderList(t *testing.T) {
 		{"key3", "value3"},
 	}
 
-	var hl HeaderList
-
 	for _, tt := range tests {
-		t.Run("s", func(t *testing.T) {
+		t.Run(tt.key, func(t *testing.T) {
+			t.Parallel()
+
+			var hl HeaderList
+
 			SetHeader[string](&hl, tt.key, tt.val)
 
 			value, ok := GetHeaderValue[string](&hl, tt.key)
@@ -36,6 +38,8 @@ func TestHeaderList(t *testing.T) {
 }
 
 func TestHeaderListUpdate(t *testing.T) {
+	t.Parallel()
+
 	var hl HeaderList
 
 	SetHeader[string](&hl, "key", "value-1")
@@ -49,6 +53,8 @@ func TestHeaderListUpdate(t *testing.T) {
 }
 
 func TestHeaderGet(t *testing.T) {
+	t.Parallel()
+
 	var hl HeaderList
 
 	SetHeader[string](&hl, "key1", "value-1")

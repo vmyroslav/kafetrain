@@ -12,7 +12,9 @@ import (
 )
 
 const (
+	// OffsetOldest oldest offset available
 	OffsetOldest = sarama.OffsetOldest
+	// OffsetNewest newest offset available
 	OffsetNewest = sarama.OffsetNewest
 )
 
@@ -22,23 +24,23 @@ type Consumer interface {
 }
 
 type Streamer interface {
-	Stream(ctx context.Context, topic string) (<-chan Message, <-chan error)
+	Stream(ctx context.Context, topic string) (messages <-chan *Message, errs <-chan error)
 	Close() error
 }
 
 // KafkaConsumer wrapper around sarama.ConsumerGroup.
 // It provides a way to consume messages from kafka topic in a consumer group.
 type KafkaConsumer struct {
-	client        sarama.Client
-	consumerGroup sarama.ConsumerGroup
 	logger        *zap.Logger
 	optionsCfg    *consumerOptionConfig
+	cfg           *Config
+	client        sarama.Client
+	consumerGroup sarama.ConsumerGroup
 	middlewares   []Middleware
-	cfg           Config
 }
 
 func NewKafkaConsumer(
-	cfg Config,
+	cfg *Config,
 	logger *zap.Logger,
 	options ...Option,
 ) (*KafkaConsumer, error) {
@@ -73,7 +75,7 @@ func NewKafkaConsumer(
 	}, nil
 }
 
-func createSaramaConfig(cfg Config) (*sarama.Config, error) {
+func createSaramaConfig(cfg *Config) (*sarama.Config, error) {
 	c := sarama.NewConfig()
 
 	v, err := sarama.ParseKafkaVersion(cfg.Version)
@@ -121,6 +123,36 @@ func createSaramaConfig(cfg Config) (*sarama.Config, error) {
 
 // Consume consume messages from kafka.
 func (c *KafkaConsumer) Consume(ctx context.Context, topic string, messageHandler MessageHandler) error {
+	if err := c.handleOptions(ctx, topic); err != nil {
+		return err
+	}
+
+	handler := newHandler(topic, messageHandler, c.middlewares, c.logger, c.optionsCfg)
+	c.logger.Info("started consuming")
+
+	// Consume errors
+	go func() {
+		for err := range c.consumerGroup.Errors() {
+			c.logger.Error("consumerGroup handlers error", zap.Error(err))
+		}
+	}()
+
+	for {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			c.logger.Error("consumerGroup handlers error", zap.Error(errors.New("context was canceled")))
+
+			break
+		}
+
+		if err := c.consumerGroup.Consume(ctx, []string{topic}, handler); err != nil {
+			return errors.WithStack(err)
+		}
+	}
+
+	return nil
+}
+
+func (c *KafkaConsumer) handleOptions(ctx context.Context, topic string) error {
 	if c.optionsCfg.Offset != 0 {
 		partitions, err := c.partitions()(ctx, topic)
 		if err != nil {
@@ -149,28 +181,6 @@ func (c *KafkaConsumer) Consume(ctx context.Context, topic string, messageHandle
 		}
 	}
 
-	handler := newHandler(topic, messageHandler, c.middlewares, c.logger, c.optionsCfg)
-	c.logger.Info("started consuming")
-
-	// Consume errors
-	go func() {
-		for err := range c.consumerGroup.Errors() {
-			c.logger.Error("consumerGroup handlers error", zap.Error(err))
-		}
-	}()
-
-	for {
-		if errors.Is(ctx.Err(), context.Canceled) {
-			c.logger.Error("consumerGroup handlers error", zap.Error(errors.New("context was canceled")))
-
-			break
-		}
-
-		if err := c.consumerGroup.Consume(ctx, []string{topic}, handler); err != nil {
-			return errors.WithStack(err)
-		}
-	}
-
 	return nil
 }
 
@@ -179,10 +189,10 @@ func (c *KafkaConsumer) Close() error {
 	return errors.WithStack(c.consumerGroup.Close())
 }
 
-func (c *KafkaConsumer) Stream(ctx context.Context, topic string) (<-chan Message, <-chan error) {
-	msgCh := make(chan Message, c.cfg.BuffSize)
+func (c *KafkaConsumer) Stream(ctx context.Context, topic string) (messages <-chan *Message, errs <-chan error) {
+	msgCh := make(chan *Message, c.cfg.BuffSize)
 	errCh := make(chan error, 1)
-	handler := newHandler(topic, MessageHandleFunc(func(ctx context.Context, message Message) error {
+	handler := newHandler(topic, MessageHandleFunc(func(_ context.Context, message *Message) error {
 		msgCh <- message
 
 		return nil
@@ -208,7 +218,7 @@ func (c *KafkaConsumer) WithMiddlewares(middlewares ...Middleware) *KafkaConsume
 func (c *KafkaConsumer) partitions() func(ctx context.Context, topic string) ([]int32, error) {
 	var partitions []int32
 
-	return func(ctx context.Context, topic string) ([]int32, error) {
+	return func(_ context.Context, topic string) ([]int32, error) {
 		if len(partitions) > 0 {
 			return partitions, nil
 		}
@@ -218,17 +228,19 @@ func (c *KafkaConsumer) partitions() func(ctx context.Context, topic string) ([]
 }
 
 // MessageHandleFunc handles messages.
-type MessageHandleFunc func(ctx context.Context, message Message) error
+type MessageHandleFunc func(ctx context.Context, message *Message) error
 
 // Handle type is an adapter to allow the use of ordinary functions as MessageHandler.
-func (f MessageHandleFunc) Handle(ctx context.Context, message Message) error { return f(ctx, message) }
+func (f MessageHandleFunc) Handle(ctx context.Context, message *Message) error {
+	return f(ctx, message)
+}
 
 // Middleware function.
 type Middleware func(next MessageHandleFunc) MessageHandleFunc
 
 // MessageHandler implementation of business logic to process received message.
 type MessageHandler interface {
-	Handle(ctx context.Context, msg Message) error
+	Handle(ctx context.Context, msg *Message) error
 }
 
 // Wrapper from our domain handlers to sarama ConsumerGroupHandler to avoid abstraction leak.
@@ -261,7 +273,7 @@ func newHandler(
 }
 
 func newMessageHandlerFunc(handler MessageHandler) MessageHandleFunc {
-	return func(ctx context.Context, message Message) error {
+	return func(ctx context.Context, message *Message) error {
 		err := handler.Handle(ctx, message)
 
 		return errors.Wrapf(err, "handler failed")
@@ -276,7 +288,7 @@ func (h *saramaHandler) Setup(session sarama.ConsumerGroupSession) error {
 	return nil
 }
 
-func (h *saramaHandler) Cleanup(session sarama.ConsumerGroupSession) error {
+func (h *saramaHandler) Cleanup(_ sarama.ConsumerGroupSession) error {
 	return nil
 }
 
@@ -284,7 +296,7 @@ func (h *saramaHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim 
 	ctx := session.Context()
 
 	for message := range claim.Messages() {
-		m := Message{
+		m := &Message{
 			Key:       message.Key,
 			Payload:   message.Value,
 			Headers:   h.mapHeaders(message.Headers),

@@ -6,24 +6,24 @@ import (
 )
 
 type MessageChainTracker interface {
-	IsRelated(ctx context.Context, msg Message) bool             // IsRelated returns true if message is related to error chain
-	AddMessage(ctx context.Context, msg Message) (string, error) // AddMessage adds message to error chain
-	ReleaseMessage(ctx context.Context, msg Message) error       // ReleaseMessage removes message from error chain
+	IsRelated(ctx context.Context, msg *Message) bool             // IsRelated returns true if message is related to error chain
+	AddMessage(ctx context.Context, msg *Message) (string, error) // AddMessage adds message to error chain
+	ReleaseMessage(ctx context.Context, msg *Message) error       // ReleaseMessage removes message from error chain
 }
 
 type KeyTracker struct {
 	lm lockMap
 
-	sync.RWMutex
+	mu sync.RWMutex
 }
 
 func NewKeyTracker() *KeyTracker {
 	return &KeyTracker{lm: make(lockMap)}
 }
 
-func (kt *KeyTracker) IsRelated(_ context.Context, msg Message) bool {
-	kt.RLock()
-	defer kt.RUnlock()
+func (kt *KeyTracker) IsRelated(_ context.Context, msg *Message) bool {
+	kt.mu.RLock()
+	defer kt.mu.RUnlock()
 
 	// If key for this topic located in map, then message is related.
 	if _, ok := kt.lm[msg.topic][string(msg.Key)]; ok {
@@ -36,8 +36,8 @@ func (kt *KeyTracker) IsRelated(_ context.Context, msg Message) bool {
 // topic map ['topic-name' => ['topic-key' => ['id1', 'id2', 'id3'], 'topic-key-2' => ['id4', 'id5', 'id6']]].
 type lockMap map[string]map[string][]string
 
-func (kt *KeyTracker) AddMessage(_ context.Context, msg Message) (string, error) {
-	kt.Lock()
+func (kt *KeyTracker) AddMessage(_ context.Context, msg *Message) (string, error) {
+	kt.mu.Lock()
 
 	key := string(msg.Key)
 
@@ -52,16 +52,16 @@ func (kt *KeyTracker) AddMessage(_ context.Context, msg Message) (string, error)
 	}
 
 	kt.lm[msg.topic][key] = append(kt.lm[msg.topic][key], key)
-	kt.Unlock()
+	kt.mu.Unlock()
 
 	return key, nil
 }
 
-func (kt *KeyTracker) ReleaseMessage(_ context.Context, msg Message) error {
+func (kt *KeyTracker) ReleaseMessage(_ context.Context, msg *Message) error {
 	topic := msg.topic
 	key := string(msg.Key)
 
-	kt.Lock()
+	kt.mu.Lock()
 	mm := remove(kt.lm[topic][key], key)
 
 	if len(mm) == 0 {
@@ -74,7 +74,7 @@ func (kt *KeyTracker) ReleaseMessage(_ context.Context, msg Message) error {
 		delete(kt.lm, topic)
 	}
 
-	kt.Unlock()
+	kt.mu.Unlock()
 
 	return nil
 }

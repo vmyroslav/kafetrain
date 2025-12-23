@@ -14,7 +14,7 @@ type producer struct {
 	brokers        []string
 }
 
-func newProducer(cfg Config) (*producer, error) {
+func newProducer(cfg *Config) (*producer, error) {
 	saramaConfig := sarama.NewConfig()
 	saramaConfig.Producer.Return.Successes = true
 	saramaConfig.Producer.Return.Errors = true
@@ -38,8 +38,8 @@ func newProducer(cfg Config) (*producer, error) {
 
 var errTopicAlreadyExists = errors.New("topic already exists")
 
-func (p *producer) publish(_ context.Context, msg Message) error {
-	var sh []sarama.RecordHeader
+func (p *producer) publish(_ context.Context, msg *Message) error {
+	sh := make([]sarama.RecordHeader, 0, len(msg.Headers))
 	for _, v := range msg.Headers {
 		sh = append(sh, sarama.RecordHeader{
 			Key:   v.Key,

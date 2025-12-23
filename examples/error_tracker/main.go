@@ -32,7 +32,7 @@ func main() {
 	registry := resilience.NewHandlerRegistry()
 	registry.Add(cfg.Topic, NewHandlerExample(logger))
 
-	t, err := resilience.NewTracker(cfg.KafkaConfig, logger, resilience.NewKeyTracker(), registry)
+	t, err := resilience.NewTracker(&cfg.KafkaConfig, logger, resilience.NewKeyTracker(), registry)
 	if err != nil {
 		logger.Fatal("could not initialize error tracker", zap.Error(err))
 	}
@@ -41,7 +41,7 @@ func main() {
 		logger.Fatal("could not start error tracker", zap.Error(err))
 	}
 
-	kafkaConsumer, err := resilience.NewKafkaConsumer(cfg.KafkaConfig, logger)
+	kafkaConsumer, err := resilience.NewKafkaConsumer(&cfg.KafkaConfig, logger)
 
 	kafkaConsumer.WithMiddlewares(
 		resilience.NewLoggingMiddleware(logger),
