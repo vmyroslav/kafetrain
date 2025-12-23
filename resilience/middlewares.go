@@ -2,7 +2,6 @@ package resilience
 
 import (
 	"context"
-	"log"
 	"time"
 
 	"github.com/pkg/errors"
@@ -33,13 +32,13 @@ func NewLoggingMiddleware(logger *zap.Logger) Middleware {
 
 // NewErrorHandlingMiddleware track message processing time.
 func NewErrorHandlingMiddleware(t *ErrorTracker) Middleware {
-	// TODO: could be done in interceptors?
 	return func(next MessageHandleFunc) MessageHandleFunc {
 		return func(ctx context.Context, msg Message) error {
-			log.Println("ErrorHandlingMiddleware")
-
 			if t.IsRelated(msg.topic, msg) {
-				log.Println("related msg")
+				t.logger.Debug("message is related to existing error chain, redirecting",
+					zap.String("topic", msg.topic),
+					zap.String("key", string(msg.Key)),
+				)
 
 				if err := t.Redirect(ctx, msg); err != nil {
 					return errors.Wrap(err, "failed to redirect msg")
@@ -78,8 +77,11 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 			maxRetries := et.cfg.MaxRetries
 
 			if maxRetries > 0 && currentAttempt > maxRetries {
-				log.Printf("retry msg: max retries exceeded (%d > %d), sending to DLQ",
-					currentAttempt, maxRetries)
+				et.logger.Warn("max retries exceeded, sending to DLQ",
+					zap.String("topic", message.topic),
+					zap.Int("current_attempt", currentAttempt),
+					zap.Int("max_retries", maxRetries),
+				)
 
 				// Get the last error reason from headers
 				lastErrorReason, _ := GetHeaderValue[string](&message.Headers, HeaderRetryReason)
@@ -91,17 +93,27 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 
 				// Send to DLQ
 				if err := et.SendToDLQ(ctx, message, lastError); err != nil {
-					log.Printf("retry msg: failed to send to DLQ: %v", err)
+					et.logger.Error("failed to send message to DLQ",
+						zap.String("topic", message.topic),
+						zap.Error(err),
+					)
+
 					return errors.Wrap(err, "failed to send message to DLQ")
 				}
 
 				// Still publish tombstone to remove from tracking
 				if err := et.Free(ctx, message); err != nil {
-					log.Printf("retry msg: failed to publish tombstone after DLQ: %v", err)
+					et.logger.Error("failed to publish tombstone after DLQ",
+						zap.String("topic", message.topic),
+						zap.Error(err),
+					)
+
 					return errors.Wrap(err, "failed to free message after DLQ")
 				}
 
-				log.Println("retry msg: successfully sent to DLQ and freed from tracking")
+				et.logger.Info("successfully sent to DLQ and freed from tracking",
+					zap.String("topic", message.topic),
+				)
 
 				return nil
 			}
@@ -114,14 +126,19 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 					// Calculate remaining delay
 					delay := nextRetryTime.Sub(now)
 
-					log.Printf("retry msg: waiting %v before processing (scheduled for %v)",
-						delay, nextRetryTime)
+					et.logger.Debug("waiting before retry processing",
+						zap.String("topic", message.topic),
+						zap.Duration("delay", delay),
+						zap.Time("scheduled_for", nextRetryTime),
+					)
 
 					// Wait until the scheduled time or context is canceled
 					select {
 					case <-time.After(delay):
 						// Continue processing after delay
-						log.Println("retry msg: delay complete, processing message")
+						et.logger.Debug("delay complete, processing message",
+							zap.String("topic", message.topic),
+						)
 					case <-ctx.Done():
 						// Context canceled during delay
 						return ctx.Err()
@@ -129,7 +146,11 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 				}
 			}
 
-			log.Printf("retry msg: processing (attempt %d/%d)", currentAttempt, maxRetries)
+			et.logger.Debug("processing retry message",
+				zap.String("topic", message.topic),
+				zap.Int("attempt", currentAttempt),
+				zap.Int("max_retries", maxRetries),
+			)
 
 			// Process the message
 			if err := next(ctx, message); err != nil {
@@ -141,7 +162,10 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 				return err
 			}
 
-			log.Println("retry msg: successfully processed and freed from tracking")
+			et.logger.Info("retry message successfully processed and freed from tracking",
+				zap.String("topic", message.topic),
+				zap.Int("attempts", currentAttempt),
+			)
 
 			return nil
 		}
