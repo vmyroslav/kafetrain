@@ -25,34 +25,27 @@ func (kt *KeyTracker) IsRelated(_ context.Context, msg *Message) bool {
 	kt.mu.RLock()
 	defer kt.mu.RUnlock()
 
-	// If key for this topic located in map, then message is related.
-	if _, ok := kt.lm[msg.topic][string(msg.Key)]; ok {
-		return true
-	}
-
-	return false
+	// If key for this topic has a reference count > 0, then message is related.
+	count, ok := kt.lm[msg.topic][string(msg.Key)]
+	return ok && count > 0
 }
 
-// topic map ['topic-name' => ['topic-key' => ['id1', 'id2', 'id3'], 'topic-key-2' => ['id4', 'id5', 'id6']]].
-type lockMap map[string]map[string][]string
+// topic map ['topic-name' => ['topic-key' => refCount]].
+// Reference counting ensures keys are unlocked only when all messages with that key complete.
+type lockMap map[string]map[string]int
 
 func (kt *KeyTracker) AddMessage(_ context.Context, msg *Message) (string, error) {
 	kt.mu.Lock()
+	defer kt.mu.Unlock()
 
 	key := string(msg.Key)
 
-	_, ok := kt.lm[msg.topic]
-	if !ok {
-		kt.lm[msg.topic] = make(map[string][]string)
+	if kt.lm[msg.topic] == nil {
+		kt.lm[msg.topic] = make(map[string]int)
 	}
 
-	_, ok = kt.lm[msg.topic][key]
-	if !ok {
-		kt.lm[msg.topic][key] = make([]string, 0)
-	}
-
-	kt.lm[msg.topic][key] = append(kt.lm[msg.topic][key], key)
-	kt.mu.Unlock()
+	// Increment reference count for this key
+	kt.lm[msg.topic][key]++
 
 	return key, nil
 }
@@ -62,29 +55,25 @@ func (kt *KeyTracker) ReleaseMessage(_ context.Context, msg *Message) error {
 	key := string(msg.Key)
 
 	kt.mu.Lock()
-	mm := remove(kt.lm[topic][key], key)
+	defer kt.mu.Unlock()
 
-	if len(mm) == 0 {
-		delete(kt.lm[topic], key)
-	} else {
-		kt.lm[topic][key] = mm
+	// Check if topic exists in map
+	if kt.lm[topic] == nil {
+		return nil
 	}
 
-	if kt.lm[topic] == nil || len(kt.lm[topic]) == 0 {
+	// Decrement reference count
+	kt.lm[topic][key]--
+
+	// Remove key when count reaches 0
+	if kt.lm[topic][key] <= 0 {
+		delete(kt.lm[topic], key)
+	}
+
+	// Clean up topic map if empty
+	if len(kt.lm[topic]) == 0 {
 		delete(kt.lm, topic)
 	}
 
-	kt.mu.Unlock()
-
 	return nil
-}
-
-func remove(s []string, r string) []string {
-	for i, v := range s {
-		if v == r {
-			return append(s[:i], s[i+1:]...)
-		}
-	}
-
-	return s
 }

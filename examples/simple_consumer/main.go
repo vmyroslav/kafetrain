@@ -26,7 +26,7 @@ func main() {
 
 	kCfg := resilience.Config{
 		Brokers:           []string{"localhost:9092"},
-		Version:           "3.0.1",
+		Version:           "4.1.0",
 		GroupID:           "example-simple-consumer",
 		ClientID:          "example-simple-consumer",
 		Username:          "",

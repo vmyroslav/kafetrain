@@ -40,6 +40,11 @@ func NewErrorHandlingMiddleware(t *ErrorTracker) Middleware {
 					zap.String("key", string(msg.Key)),
 				)
 
+				// Add to tracking BEFORE redirect
+				if _, err := t.comparator.AddMessage(ctx, msg); err != nil {
+					return errors.Wrap(err, "failed to track related message")
+				}
+
 				if err := t.Redirect(ctx, msg); err != nil {
 					return errors.Wrap(err, "failed to redirect msg")
 				}
@@ -50,6 +55,11 @@ func NewErrorHandlingMiddleware(t *ErrorTracker) Middleware {
 			if err := next(ctx, msg); err != nil {
 				var e RetriableError
 				if errors.As(err, &e) {
+					// Add to tracking BEFORE redirect
+					if _, err := t.comparator.AddMessage(ctx, msg); err != nil {
+						return errors.Wrap(err, "failed to track failed message")
+					}
+
 					// Use RedirectWithError to capture the error reason
 					if err := t.RedirectWithError(ctx, msg, e.Origin); err != nil {
 						return errors.Wrap(err, "failed to redirect msg")
@@ -85,11 +95,43 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 
 			et.logger.Debug("processing retry message",
 				zap.String("topic", message.topic),
-				zap.Int("attempt", currentAttempt),
+				zap.Int("current_attempt", currentAttempt),
 				zap.Int("max_retries", maxRetries),
+				zap.Int64("offset", message.Offset()),
+				zap.Int32("partition", message.Partition()),
 			)
 
 			if err := next(ctx, message); err != nil {
+				// Check if it's a retriable error
+				var retriableErr RetriableError
+				if errors.As(err, &retriableErr) && retriableErr.ShouldRetry() {
+					// Check if we've exceeded max retries
+					if maxRetries > 0 && currentAttempt+1 > maxRetries {
+						// Send to DLQ
+						return et.HandleMaxRetriesExceeded(ctx, message, currentAttempt+1, maxRetries)
+					}
+
+					// Redirect with incremented attempt counter
+					if redirectErr := et.RedirectWithError(ctx, message, retriableErr.Origin); redirectErr != nil {
+						et.logger.Error("failed to redirect retry failure",
+							zap.String("topic", message.topic),
+							zap.Error(redirectErr),
+						)
+
+						return errors.Wrap(redirectErr, "failed to redirect retry failure")
+					}
+
+					et.logger.Debug("successfully redirected retry failure, committing offset",
+						zap.String("topic", message.topic),
+						zap.Int64("offset", message.Offset()),
+						zap.Int("next_attempt", currentAttempt+1),
+					)
+
+					// Successfully redirected, commit offset
+					return nil
+				}
+
+				// Non-retriable error, propagate it
 				return err
 			}
 

@@ -21,6 +21,10 @@ func newProducer(cfg *Config) (*producer, error) {
 	saramaConfig.Net.WriteTimeout = 1 * time.Second
 	saramaConfig.Metadata.Retry.Max = 5
 
+	// Explicitly use hash partitioner for partition affinity
+	// This ensures messages with same key go to same partition across all topics (primary, retry, redirect, DLQ)
+	saramaConfig.Producer.Partitioner = sarama.NewHashPartitioner
+
 	p := producer{
 		brokers: cfg.Brokers,
 		cfg:     saramaConfig,
@@ -49,7 +53,7 @@ func (p *producer) publish(_ context.Context, msg *Message) error {
 
 	sm := sarama.ProducerMessage{
 		Topic:   msg.topic,
-		Key:     sarama.ByteEncoder(msg.Key),
+		Key:     sarama.ByteEncoder(msg.Key), // Critical: Key ensures partition affinity (same key → same partition)
 		Value:   sarama.ByteEncoder(msg.Payload),
 		Headers: sh,
 	}

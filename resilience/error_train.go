@@ -98,6 +98,25 @@ func (t *ErrorTracker) ensureTopicsExist(topic string) error {
 
 	defer func() { _ = admin.Close() }()
 
+	// Query primary topic partition count for partition affinity
+	primaryPartitions := t.cfg.RetryTopicPartitions // fallback to config
+
+	metadata, err := admin.DescribeTopics([]string{topic})
+	if err == nil && len(metadata) > 0 && len(metadata[0].Partitions) > 0 {
+		primaryPartitions = int32(len(metadata[0].Partitions))
+
+		t.logger.Debug("using primary topic partition count for retry topics",
+			zap.String("topic", topic),
+			zap.Int32("partitions", primaryPartitions),
+		)
+	} else {
+		t.logger.Warn("could not query primary topic, using config value",
+			zap.String("topic", topic),
+			zap.Int32("partitions", primaryPartitions),
+			zap.Error(err),
+		)
+	}
+
 	g := errgroup.Group{}
 	topics := []struct {
 		detail *sarama.TopicDetail
@@ -106,18 +125,18 @@ func (t *ErrorTracker) ensureTopicsExist(topic string) error {
 		{
 			name: t.retryTopic(topic),
 			detail: &sarama.TopicDetail{
-				NumPartitions:     t.cfg.RetryTopicPartitions,
+				NumPartitions:     primaryPartitions, // Match primary topic
 				ReplicationFactor: 1,
 				ConfigEntries: map[string]*string{
-					"cleanup.policy": toPtr("compact"),
-					"segment.ms":     toPtr("100"),
+					"cleanup.policy": toPtr("delete"),
+					"retention.ms":   toPtr("3600000"), // 1 hour retention
 				},
 			},
 		},
 		{
 			name: t.redirectTopic(topic),
 			detail: &sarama.TopicDetail{
-				NumPartitions:     t.cfg.RetryTopicPartitions,
+				NumPartitions:     primaryPartitions, // Match primary topic
 				ReplicationFactor: 1,
 				ConfigEntries: map[string]*string{
 					"cleanup.policy": toPtr("compact"),
@@ -128,7 +147,7 @@ func (t *ErrorTracker) ensureTopicsExist(topic string) error {
 		{
 			name: t.dlqTopic(topic),
 			detail: &sarama.TopicDetail{
-				NumPartitions:     t.cfg.RetryTopicPartitions,
+				NumPartitions:     primaryPartitions, // Match primary topic
 				ReplicationFactor: 1,
 				ConfigEntries: map[string]*string{
 					"cleanup.policy": toPtr("delete"),
@@ -196,7 +215,12 @@ func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
 }
 
 func (t *ErrorTracker) startConsumers(ctx context.Context, topic string) error {
-	retryConsumer, err := NewKafkaConsumer(t.cfg, t.logger)
+	// create separate consumer group IDs to avoid rebalancing conflicts
+	// each consumer needs its own group since they consume different topics
+	retryCfg := *t.cfg
+	retryCfg.GroupID = t.cfg.GroupID + "-retry"
+
+	retryConsumer, err := NewKafkaConsumer(&retryCfg, t.logger)
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -210,7 +234,10 @@ func (t *ErrorTracker) startConsumers(ctx context.Context, topic string) error {
 		_ = retryConsumer.WithMiddlewares(NewRetryMiddleware(t)).Consume(ctx, t.retryTopic(topic), handler)
 	}()
 
-	redirectConsumer, err := NewKafkaConsumer(t.cfg, t.logger)
+	redirectCfg := *t.cfg
+	redirectCfg.GroupID = t.cfg.GroupID + "-redirect"
+
+	redirectConsumer, err := NewKafkaConsumer(&redirectCfg, t.logger)
 	if err != nil {
 		return errors.WithStack(err)
 	}
@@ -243,17 +270,25 @@ func (t *ErrorTracker) RedirectWithError(ctx context.Context, msg *Message, last
 		originalTime = time.Now()
 	}
 
+	// Get the ORIGINAL topic from headers (if this is already a retry message)
+	// This prevents creating "retry_retry_..." topic names
+	originalTopic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
+	if !ok {
+		// This is the first redirect, use the current topic
+		originalTopic = msg.topic
+	}
+
 	nextDelay := t.backoffStrategy.NextDelay(currentAttempt)
 	nextRetryTime := time.Now().Add(nextDelay)
 	nextAttempt := currentAttempt + 1
 
-	id, err := t.comparator.AddMessage(ctx, msg)
-	if err != nil {
-		return errors.WithStack(err)
-	}
+	// Use key directly - tracking already done in middleware
+	key := string(msg.Key)
 
-	t.logger.Info("redirecting message to retry topic",
+	t.logger.Debug("redirecting message to retry topic",
 		zap.String("topic", msg.topic),
+		zap.String("original_topic", originalTopic),
+		zap.String("key", key),
 		zap.Int("attempt", nextAttempt),
 		zap.Int("max_retries", t.cfg.MaxRetries),
 		zap.Duration("next_delay", nextDelay),
@@ -262,11 +297,29 @@ func (t *ErrorTracker) RedirectWithError(ctx context.Context, msg *Message, last
 
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		return t.publishToRetry(ctx, msg, id, nextAttempt, nextRetryTime, originalTime, lastError)
+		if err := t.publishToRetry(ctx, msg, key, nextAttempt, nextRetryTime, originalTime, lastError, originalTopic); err != nil {
+			t.logger.Error("failed to publish to retry topic",
+				zap.String("topic", originalTopic),
+				zap.Error(err),
+			)
+			return err
+		}
+		t.logger.Debug("published to retry topic",
+			zap.String("retry_topic", t.retryTopic(originalTopic)),
+			zap.Int("next_attempt", nextAttempt),
+		)
+		return nil
 	})
 
 	g.Go(func() error {
-		return t.publishToRedirect(ctx, msg, id)
+		if err := t.publishToRedirect(ctx, msg, key, originalTopic); err != nil {
+			t.logger.Error("failed to publish to redirect topic",
+				zap.String("topic", originalTopic),
+				zap.Error(err),
+			)
+			return err
+		}
+		return nil
 	})
 
 	return errors.WithStack(g.Wait())
@@ -280,6 +333,7 @@ func (t *ErrorTracker) publishToRetry(
 	nextRetryTime time.Time,
 	originalTime time.Time,
 	lastError error,
+	originalTopic string,
 ) error {
 	retryHeaders := make(HeaderList, 0, len(msg.Headers)+6)
 	for _, h := range msg.Headers {
@@ -302,10 +356,10 @@ func (t *ErrorTracker) publishToRetry(
 
 	SetHeader[string](&retryHeaders, headerID, id)
 	SetHeader[string](&retryHeaders, headerRetry, "true")
-	SetHeader[string](&retryHeaders, HeaderTopic, msg.topic)
+	SetHeader[string](&retryHeaders, HeaderTopic, originalTopic)
 
 	retryMsg := &Message{
-		topic:   t.retryTopic(msg.topic),
+		topic:   t.retryTopic(originalTopic),
 		Key:     msg.Key,
 		Payload: msg.Payload,
 		Headers: retryHeaders,
@@ -314,15 +368,15 @@ func (t *ErrorTracker) publishToRetry(
 	return t.producer.publish(ctx, retryMsg)
 }
 
-func (t *ErrorTracker) publishToRedirect(ctx context.Context, msg *Message, id string) error {
+func (t *ErrorTracker) publishToRedirect(ctx context.Context, msg *Message, id string, originalTopic string) error {
 	newMessage := &Message{
-		topic:   t.redirectTopic(msg.topic),
+		topic:   t.redirectTopic(originalTopic),
 		Key:     []byte(id),
 		Payload: []byte(id),
 		Headers: HeaderList{
 			{
 				Key:   []byte(HeaderTopic),
-				Value: []byte(msg.topic),
+				Value: []byte(originalTopic),
 			},
 			{
 				Key:   []byte("key"),
