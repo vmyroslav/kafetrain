@@ -528,19 +528,22 @@ func (t *ErrorTracker) HandleMaxRetriesExceeded(ctx context.Context, message *Me
 		return errors.Wrap(err, "failed to send message to DLQ")
 	}
 
-	// Still publish tombstone to remove from tracking
-	if err := t.Free(ctx, message); err != nil {
-		t.logger.Error("failed to publish tombstone after DLQ",
+	// conditionally free from tracking based on config
+	if t.cfg.FreeOnDLQ {
+		if err := t.Free(ctx, message); err != nil {
+			t.logger.Error("failed to publish tombstone after DLQ",
+				zap.String("topic", message.topic),
+				zap.Error(err),
+			)
+
+			return errors.Wrap(err, "failed to free message after DLQ")
+		}
+
+		t.logger.Debug("successfully sent to DLQ and freed from tracking",
 			zap.String("topic", message.topic),
-			zap.Error(err),
+			zap.Bool("free_on_dlq", t.cfg.FreeOnDLQ),
 		)
-
-		return errors.Wrap(err, "failed to free message after DLQ")
 	}
-
-	t.logger.Info("successfully sent to DLQ and freed from tracking",
-		zap.String("topic", message.topic),
-	)
 
 	return nil
 }

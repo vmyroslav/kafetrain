@@ -16,5 +16,6 @@ type Config struct {
 	RetryTopicPartitions int32    `envconfig:"KAFKA_RETRY_TOPIC_PARTITIONS" default:"1"`
 	BuffSize             uint16   `envconfig:"KAFKA_BUFF_SIZE" default:"256"`
 	MaxProcessingTime    uint16   `envconfig:"KAFKA_MAX_PROCESSING_TIME_MS" default:"100"`
+	FreeOnDLQ            bool     `envconfig:"KAFKA_DLQ_FREE_ON_SEND" default:"false"`
 	Silent               bool     `envconfig:"KAFKA_CONSUMER_SILENT" default:"false"`
 }
