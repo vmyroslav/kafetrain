@@ -68,7 +68,7 @@ func TestIntegration_DLQFlow(t *testing.T) {
 	require.NoError(t, err, "failed to create tracker")
 
 	// Start error tracker
-	err = tracker.Start(ctx, topic)
+	err = tracker.StartRetryConsumers(ctx, topic)
 	require.NoError(t, err, "failed to start tracker")
 
 	// Create primary consumer

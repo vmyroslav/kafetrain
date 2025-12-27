@@ -72,7 +72,10 @@ func NewTrackerWithBackoff(
 	return &t, nil
 }
 
-func (t *ErrorTracker) Start(ctx context.Context, topic string) error {
+// StartRetryConsumers starts the retry and redirect topic consumers independently.
+// This allows the ErrorTracker to work standalone with any consumer implementation.
+// Users handle the main topic consumption themselves and call Redirect/Free manually.
+func (t *ErrorTracker) StartRetryConsumers(ctx context.Context, topic string) error {
 	if err := t.ensureTopicsExist(topic); err != nil {
 		return err
 	}
@@ -253,15 +256,69 @@ func (t *ErrorTracker) Errors() <-chan error {
 	return t.errors
 }
 
-func (t *ErrorTracker) IsRelated(_ string, msg *Message) bool {
-	return t.comparator.IsRelated(context.Background(), msg)
+// IsInRetryChain checks if a Sarama message is already in the retry chain.
+// Returns true if the message key is currently being tracked for retries.
+func (t *ErrorTracker) IsInRetryChain(msg *sarama.ConsumerMessage) bool {
+	internalMsg := t.toInternalMessage(msg)
+	return t.comparator.IsRelated(context.Background(), internalMsg)
 }
 
-func (t *ErrorTracker) Redirect(ctx context.Context, msg *Message) error {
-	return t.RedirectWithError(ctx, msg, nil)
+// Redirect sends a failed Sarama message to the retry topic for reprocessing.
+// This is the primary public API for standalone ErrorTracker usage.
+// The message will be tracked and retried according to the configured backoff strategy.
+func (t *ErrorTracker) Redirect(ctx context.Context, msg *sarama.ConsumerMessage, lastError error) error {
+	internalMsg := t.toInternalMessage(msg)
+
+	// Check if already in retry chain
+	if t.comparator.IsRelated(ctx, internalMsg) {
+		t.logger.Debug("message already in retry chain, skipping redirect",
+			zap.String("topic", msg.Topic),
+			zap.Int64("offset", msg.Offset),
+		)
+		return nil
+	}
+
+	return t.redirectMessageWithError(ctx, internalMsg, lastError)
 }
 
-func (t *ErrorTracker) RedirectWithError(ctx context.Context, msg *Message, lastError error) error {
+// Free removes a successfully processed Sarama message from the retry chain.
+// This is the primary public API for standalone ErrorTracker usage.
+// Publishes a tombstone to the redirect topic to release the message key.
+func (t *ErrorTracker) Free(ctx context.Context, msg *sarama.ConsumerMessage) error {
+	internalMsg := t.toInternalMessage(msg)
+	return t.freeMessage(ctx, internalMsg)
+}
+
+// toInternalMessage converts a Sarama ConsumerMessage to internal Message type.
+func (t *ErrorTracker) toInternalMessage(msg *sarama.ConsumerMessage) *Message {
+	headers := make(HeaderList, len(msg.Headers))
+	for i, h := range msg.Headers {
+		headers[i] = Header{
+			Key:   h.Key,
+			Value: h.Value,
+		}
+	}
+
+	return &Message{
+		topic:     msg.Topic,
+		partition: msg.Partition,
+		offset:    msg.Offset,
+		Key:       msg.Key,
+		Payload:   msg.Value,
+		Headers:   headers,
+		Timestamp: msg.Timestamp,
+	}
+}
+
+// redirectMessage is the internal Message-based redirect used by middlewares.
+// For standalone usage, use Redirect(*sarama.ConsumerMessage, error) instead.
+func (t *ErrorTracker) redirectMessage(ctx context.Context, msg *Message) error {
+	return t.redirectMessageWithError(ctx, msg, nil)
+}
+
+// redirectMessageWithError is the internal Message-based redirect implementation.
+// For standalone usage, use Redirect(*sarama.ConsumerMessage, error) instead.
+func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Message, lastError error) error {
 	// Calculate retry metadata
 	currentAttempt, _ := GetHeaderValue[int](&msg.Headers, HeaderRetryAttempt)
 
@@ -388,7 +445,9 @@ func (t *ErrorTracker) publishToRedirect(ctx context.Context, msg *Message, id s
 	return t.producer.publish(ctx, newMessage)
 }
 
-func (t *ErrorTracker) Free(ctx context.Context, msg *Message) error {
+// freeMessage is the internal Message-based free implementation used by middlewares.
+// For standalone usage, use Free(*sarama.ConsumerMessage) instead.
+func (t *ErrorTracker) freeMessage(ctx context.Context, msg *Message) error {
 	id, ok := GetHeaderValue[string](&msg.Headers, headerRetry)
 	if !ok {
 		return errors.New("topic id not found")
@@ -530,7 +589,7 @@ func (t *ErrorTracker) HandleMaxRetriesExceeded(ctx context.Context, message *Me
 
 	// conditionally free from tracking based on config
 	if t.cfg.FreeOnDLQ {
-		if err := t.Free(ctx, message); err != nil {
+		if err := t.freeMessage(ctx, message); err != nil {
 			t.logger.Error("failed to publish tombstone after DLQ",
 				zap.String("topic", message.topic),
 				zap.Error(err),

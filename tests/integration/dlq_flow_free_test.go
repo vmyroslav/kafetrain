@@ -73,7 +73,7 @@ func TestIntegration_DLQFlowWithFree(t *testing.T) {
 	tracker, err := resilience.NewTracker(&cfg, logger, resilience.NewKeyTracker(), registry)
 	require.NoError(t, err, "failed to create tracker")
 
-	err = tracker.Start(ctx, topic)
+	err = tracker.StartRetryConsumers(ctx, topic)
 	require.NoError(t, err, "failed to start tracker")
 
 	consumer, err := resilience.NewKafkaConsumer(&cfg, logger)

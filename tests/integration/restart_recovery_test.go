@@ -65,7 +65,7 @@ func TestIntegration_RestartRecovery(t *testing.T) {
 	tracker1, err := resilience.NewTracker(&cfg, logger, resilience.NewKeyTracker(), registry)
 	require.NoError(t, err, "failed to create first tracker")
 
-	err = tracker1.Start(ctx, topic)
+	err = tracker1.StartRetryConsumers(ctx, topic)
 	require.NoError(t, err, "failed to start first tracker")
 
 	consumer1, err := resilience.NewKafkaConsumer(&cfg, logger)
@@ -111,7 +111,7 @@ func TestIntegration_RestartRecovery(t *testing.T) {
 	tracker2, err := resilience.NewTracker(&cfg, logger, resilience.NewKeyTracker(), registry)
 	require.NoError(t, err, "failed to create second tracker")
 
-	err = tracker2.Start(ctx, topic)
+	err = tracker2.StartRetryConsumers(ctx, topic)
 	require.NoError(t, err, "failed to start second tracker")
 
 	consumer2, err := resilience.NewKafkaConsumer(&cfg, logger)

@@ -72,7 +72,7 @@ func TestIntegration_FullRetryFlow(t *testing.T) {
 	require.NoError(t, err, "failed to create tracker")
 
 	// Start error tracker (creates retry/redirect/DLQ topics and starts consumers)
-	err = tracker.Start(ctx, topic)
+	err = tracker.StartRetryConsumers(ctx, topic)
 	require.NoError(t, err, "failed to start tracker")
 
 	// Create primary consumer

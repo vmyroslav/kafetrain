@@ -37,8 +37,8 @@ func main() {
 		logger.Fatal("could not initialize error tracker", zap.Error(err))
 	}
 
-	if err = t.Start(ctx, cfg.Topic); err != nil {
-		logger.Fatal("could not start error tracker", zap.Error(err))
+	if err = t.StartRetryConsumers(ctx, cfg.Topic); err != nil {
+		logger.Fatal("could not start retry consumers", zap.Error(err))
 	}
 
 	kafkaConsumer, err := resilience.NewKafkaConsumer(&cfg.KafkaConfig, logger)

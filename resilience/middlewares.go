@@ -34,7 +34,7 @@ func NewLoggingMiddleware(logger *zap.Logger) Middleware {
 func NewErrorHandlingMiddleware(t *ErrorTracker) Middleware {
 	return func(next MessageHandleFunc) MessageHandleFunc {
 		return func(ctx context.Context, msg *Message) error {
-			if t.IsRelated(msg.topic, msg) {
+			if t.comparator.IsRelated(ctx, msg) {
 				t.logger.Debug("message is related to existing error chain, redirecting",
 					zap.String("topic", msg.topic),
 					zap.String("key", string(msg.Key)),
@@ -45,7 +45,7 @@ func NewErrorHandlingMiddleware(t *ErrorTracker) Middleware {
 					return errors.Wrap(err, "failed to track related message")
 				}
 
-				if err := t.Redirect(ctx, msg); err != nil {
+				if err := t.redirectMessage(ctx, msg); err != nil {
 					return errors.Wrap(err, "failed to redirect msg")
 				}
 
@@ -60,8 +60,8 @@ func NewErrorHandlingMiddleware(t *ErrorTracker) Middleware {
 						return errors.Wrap(err, "failed to track failed message")
 					}
 
-					// Use RedirectWithError to capture the error reason
-					if err := t.RedirectWithError(ctx, msg, e.Origin); err != nil {
+					// Use redirectMessageWithError to capture the error reason
+					if err := t.redirectMessageWithError(ctx, msg, e.Origin); err != nil {
 						return errors.Wrap(err, "failed to redirect msg")
 					}
 
@@ -112,7 +112,7 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 					}
 
 					// Redirect with incremented attempt counter
-					if redirectErr := et.RedirectWithError(ctx, message, retriableErr.Origin); redirectErr != nil {
+					if redirectErr := et.redirectMessageWithError(ctx, message, retriableErr.Origin); redirectErr != nil {
 						et.logger.Error("failed to redirect retry failure",
 							zap.String("topic", message.topic),
 							zap.Error(redirectErr),
@@ -135,7 +135,7 @@ func NewRetryMiddleware(et *ErrorTracker) Middleware {
 				return err
 			}
 
-			if err := et.Free(ctx, message); err != nil {
+			if err := et.freeMessage(ctx, message); err != nil {
 				return err
 			}
 
