@@ -67,14 +67,15 @@ func TestIntegration_DLQFlowWithFree(t *testing.T) {
 	})
 
 	// Setup tracker and consumer
-	registry := resilience.NewHandlerRegistry()
-	registry.Add(topic, handler)
-
-	tracker, err := resilience.NewTracker(&cfg, logger, resilience.NewKeyTracker(), registry)
+	tracker, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
 	require.NoError(t, err, "failed to create tracker")
 
-	err = tracker.StartRetryConsumers(ctx, topic)
-	require.NoError(t, err, "failed to start tracker")
+	err = tracker.StartTracking(ctx, topic)
+	require.NoError(t, err, "failed to start tracking")
+
+	retryMgr := resilience.NewRetryManager(tracker, handler)
+	err = retryMgr.StartRetryConsumer(ctx, topic)
+	require.NoError(t, err, "failed to start retry consumer")
 
 	consumer, err := resilience.NewKafkaConsumer(&cfg, logger)
 	require.NoError(t, err, "failed to create consumer")

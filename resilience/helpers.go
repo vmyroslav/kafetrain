@@ -26,6 +26,7 @@ func GetRetryAttempt(msg *sarama.ConsumerMessage) int {
 			return val
 		}
 	}
+
 	return 0
 }
 

@@ -29,32 +29,36 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	registry := resilience.NewHandlerRegistry()
-	registry.Add(cfg.Topic, NewHandlerExample(logger))
-
-	t, err := resilience.NewTracker(&cfg.KafkaConfig, logger, resilience.NewKeyTracker(), registry)
+	// Layer 1: Create ErrorTracker
+	tracker, err := resilience.NewErrorTracker(&cfg.KafkaConfig, logger, resilience.NewKeyTracker())
 	if err != nil {
 		logger.Fatal("could not initialize error tracker", zap.Error(err))
 	}
 
-	if err = t.StartRetryConsumers(ctx, cfg.Topic); err != nil {
-		logger.Fatal("could not start retry consumers", zap.Error(err))
+	if err = tracker.StartTracking(ctx, cfg.Topic); err != nil {
+		logger.Fatal("could not start tracking", zap.Error(err))
 	}
 
+	// Layer 2: Create RetryManager for managed retry consumer
+	handler := NewHandlerExample(logger)
+	retryMgr := resilience.NewRetryManager(tracker, handler)
+
+	if err = retryMgr.StartRetryConsumer(ctx, cfg.Topic); err != nil {
+		logger.Fatal("could not start retry consumer", zap.Error(err))
+	}
+
+	// Layer 3: Use KafkaConsumer wrapper
 	kafkaConsumer, err := resilience.NewKafkaConsumer(&cfg.KafkaConfig, logger)
-
-	kafkaConsumer.WithMiddlewares(
-		resilience.NewLoggingMiddleware(logger),
-		resilience.NewErrorHandlingMiddleware(t),
-		resilience.NewRetryMiddleware(t),
-	)
-
 	if err != nil {
 		logger.Fatal("could not create kafka consumer", zap.Error(err))
 	}
 
+	kafkaConsumer.WithMiddlewares(
+		resilience.NewLoggingMiddleware(logger),
+		resilience.NewErrorHandlingMiddleware(tracker),
+	)
+
 	go func() {
-		handler, _ := registry.Get(cfg.Topic)
 		consumerErrors <- kafkaConsumer.Consume(ctx, cfg.Topic, handler)
 	}()
 

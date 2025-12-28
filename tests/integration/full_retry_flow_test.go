@@ -64,16 +64,17 @@ func TestIntegration_FullRetryFlow(t *testing.T) {
 		return nil
 	})
 
-	// Create registry and tracker
-	registry := resilience.NewHandlerRegistry()
-	registry.Add(topic, handler)
-
-	tracker, err := resilience.NewTracker(&cfg, logger, resilience.NewKeyTracker(), registry)
+	// Create tracker (Layer 1)
+	tracker, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
 	require.NoError(t, err, "failed to create tracker")
 
-	// Start error tracker (creates retry/redirect/DLQ topics and starts consumers)
-	err = tracker.StartRetryConsumers(ctx, topic)
-	require.NoError(t, err, "failed to start tracker")
+	err = tracker.StartTracking(ctx, topic)
+	require.NoError(t, err, "failed to start tracking")
+
+	// Create retry manager (Layer 2)
+	retryMgr := resilience.NewRetryManager(tracker, handler)
+	err = retryMgr.StartRetryConsumer(ctx, topic)
+	require.NoError(t, err, "failed to start retry consumer")
 
 	// Create primary consumer
 	consumer, err := resilience.NewKafkaConsumer(&cfg, logger)

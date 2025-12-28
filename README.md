@@ -27,9 +27,13 @@ Kafetrain provides a sophisticated 3-topic retry mechanism that maintains **FIFO
 
 ## Quick Start
 
-### Standalone Usage (Recommended)
+Kafetrain provides **three layers** - choose based on your needs:
 
-Use ErrorTracker with your existing Sarama consumer:
+### Layer 1: Minimal Standalone (Zero Abstractions)
+
+**Best for:** Maximum control, existing Sarama infrastructure, large codebases
+
+You run BOTH main and retry consumers with the SAME handler:
 
 ```go
 package main
@@ -41,42 +45,42 @@ import (
 )
 
 func main() {
-    // 1. Create ErrorTracker
-    tracker, _ := resilience.NewTracker(cfg, logger, resilience.NewKeyTracker(), nil)
+    // Create ErrorTracker - only manages tracking
+    tracker, _ := resilience.NewErrorTracker(cfg, logger, resilience.NewKeyTracker())
+    tracker.StartTracking(ctx, "orders")  // Only starts redirect consumer
 
-    // 2. Start retry consumers
-    go tracker.StartRetryConsumers(context.Background(), "orders")
+    // YOU create and manage BOTH consumers
+    mainConsumer, _ := sarama.NewConsumerGroup(brokers, groupID, config)
+    retryConsumer, _ := sarama.NewConsumerGroup(brokers, groupID+"-retry", config)
 
-    // 3. Use your own Sarama consumer
-    consumerGroup, _ := sarama.NewConsumerGroup(brokers, groupID, config)
     handler := &YourHandler{tracker: tracker}
-    consumerGroup.Consume(ctx, []string{"orders"}, handler)
+
+    // Same handler for BOTH consumers (DRY!)
+    go mainConsumer.Consume(ctx, []string{"orders"}, handler)
+    go retryConsumer.Consume(ctx, []string{tracker.GetRetryTopic("orders")}, handler)
 }
 
-// Your existing consumer handler
 type YourHandler struct {
     tracker *resilience.ErrorTracker
 }
 
 func (h *YourHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
     for msg := range claim.Messages() {
-        // Skip if in retry chain
         if h.tracker.IsInRetryChain(msg) {
-            continue
+            continue  // Skip messages being retried
         }
 
-        // Process message
         if err := processMessage(msg); err != nil {
             if resilience.IsRetriable(err) {
-                h.tracker.Redirect(ctx, msg, err)  // Send to retry topic
+                h.tracker.Redirect(ctx, msg, err)
+                session.MarkMessage(msg, "")
                 continue
             }
-            return err  // Non-retriable error
+            return err
         }
 
-        // Success - free from tracking if retry message
         if resilience.IsRetryMessage(msg) {
-            h.tracker.Free(ctx, msg)
+            h.tracker.Free(ctx, msg)  // Release from tracking
         }
 
         session.MarkMessage(msg, "")
@@ -87,9 +91,9 @@ func (h *YourHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sa
 
 See [examples/standalone](examples/standalone/) for complete example.
 
-### Consumer Wrapper Usage (Optional)
+### Layer 2: Managed Retry (Convenience)
 
-For simpler cases, use the optional Consumer wrapper:
+**Best for:** Want retry managed but keep control of main consumer
 
 ```go
 package main
@@ -106,31 +110,61 @@ func processOrder(ctx context.Context, msg *sarama.ConsumerMessage) error {
     json.Unmarshal(msg.Value, &order)
 
     if err := chargePayment(order); err != nil {
-        return resilience.RetriableError{
-            Retry: true,
-            Origin: err,
-        }
+        return resilience.RetriableError{Retry: true, Origin: err}
     }
-
     return nil
 }
 
 func main() {
-    tracker, _ := resilience.NewTracker(cfg, logger, resilience.NewKeyTracker(), nil)
-    go tracker.StartRetryConsumers(context.Background(), "orders")
+    // Layer 1: Create tracker
+    tracker, _ := resilience.NewErrorTracker(cfg, logger, resilience.NewKeyTracker())
+    tracker.StartTracking(ctx, "orders")
 
-    // Optional Consumer wrapper handles Redirect/Free automatically
+    // Layer 2: Retry manager handles retry consumer
+    retryMgr := resilience.NewRetryManagerWithSaramaHandler(tracker, processOrder)
+    retryMgr.StartRetryConsumer(ctx, "orders")
+
+    // You manage main consumer with YOUR Sarama code
+    mainConsumer, _ := sarama.NewConsumerGroup(brokers, groupID, config)
+    handler := &YourHandler{tracker: tracker, processOrder: processOrder}
+    mainConsumer.Consume(ctx, []string{"orders"}, handler)
+}
+```
+
+### Layer 3: Full Wrapper (Maximum Convenience)
+
+**Best for:** New projects, simple use cases, prefer abstraction over control
+
+```go
+package main
+
+import (
+    "context"
+    "github.com/vmyroslav/kafetrain/resilience"
+)
+
+func main() {
+    // Layer 1: Create tracker
+    tracker, _ := resilience.NewErrorTracker(cfg, logger, resilience.NewKeyTracker())
+    tracker.StartTracking(ctx, "orders")
+
+    // Layer 2: Managed retry
+    handler := NewOrderHandler(logger)
+    retryMgr := resilience.NewRetryManager(tracker, handler)
+    retryMgr.StartRetryConsumer(ctx, "orders")
+
+    // Layer 3: Wrapper with middlewares
     consumer, _ := resilience.NewKafkaConsumer(cfg, logger)
     consumer.WithMiddlewares(
         resilience.NewLoggingMiddleware(logger),
         resilience.NewErrorHandlingMiddleware(tracker),
     )
 
-    consumer.Consume(ctx, "orders", resilience.MessageHandleFunc(processOrder))
+    consumer.Consume(ctx, "orders", handler)
 }
 ```
 
-See [examples/simple_consumer](examples/simple_consumer/) for complete example.
+See [examples/error_tracker](examples/error_tracker/) for complete example.
 
 ## How It Works
 
@@ -187,14 +221,19 @@ cfg := &resilience.Config{
 
 ## API Reference
 
-### ErrorTracker (Core API)
+### Layer 1: ErrorTracker (Core Tracking API)
 
 ```go
-// Create tracker
-tracker, err := resilience.NewTracker(cfg, logger, keyTracker, backoffStrategy)
+// Create tracker (pure tracking - no retry consumer)
+tracker, err := resilience.NewErrorTracker(cfg, logger, keyTracker)
+// With custom backoff:
+tracker, err := resilience.NewErrorTrackerWithBackoff(cfg, logger, keyTracker, backoff)
 
-// Start retry consumers (independent of main consumption)
-err := tracker.StartRetryConsumers(ctx, "topic-name")
+// Start tracking (only starts redirect consumer)
+err := tracker.StartTracking(ctx, "topic-name")
+
+// Get retry topic name (for manual consumption)
+retryTopic := tracker.GetRetryTopic("topic-name")
 
 // Redirect failed message to retry topic
 err := tracker.Redirect(ctx, *sarama.ConsumerMessage, error)
@@ -204,6 +243,23 @@ err := tracker.Free(ctx, *sarama.ConsumerMessage)
 
 // Check if message is in retry chain
 inChain := tracker.IsInRetryChain(*sarama.ConsumerMessage)
+```
+
+### Layer 2: RetryManager (Managed Retry API)
+
+```go
+// Create retry manager with MessageHandler
+retryMgr := resilience.NewRetryManager(tracker, handler)
+
+// Create retry manager with Sarama handler function (recommended)
+retryMgr := resilience.NewRetryManagerWithSaramaHandler(tracker,
+    func(ctx context.Context, msg *sarama.ConsumerMessage) error {
+        // Your business logic
+        return processMessage(ctx, msg)
+    })
+
+// Start retry consumer (manages retry consumer lifecycle)
+err := retryMgr.StartRetryConsumer(ctx, "topic-name")
 ```
 
 ### Helper Functions
@@ -225,20 +281,27 @@ originalTopic := resilience.GetOriginalTopic(msg)
 reason := resilience.GetRetryReason(msg)
 ```
 
-## When to Use Each Approach
+## When to Use Each Layer
 
-### Use Standalone ErrorTracker when:
-- ✅ You have existing Sarama consumer code
-- ✅ You want full control over consumption logic
-- ✅ You need to integrate into large existing codebase
-- ✅ Your team prefers explicit control over abstraction
-- ✅ You're using other libraries/frameworks (Watermill, etc.)
+### Use Layer 1 (Minimal Standalone) when:
+- ✅ You have existing Sarama consumer infrastructure
+- ✅ You need maximum control and transparency
+- ✅ You're integrating into a large existing codebase
+- ✅ You prefer explicit over implicit
+- ✅ You're using other libraries/frameworks (Watermill, franz-go, etc.)
+- ✅ You want zero forced abstractions
 
-### Use Consumer Wrapper when:
+### Use Layer 2 (Managed Retry) when:
+- ✅ You want retry handling but keep control of main consumer
+- ✅ You have custom consumption patterns
+- ✅ You need flexibility with some convenience
+- ✅ You're gradually adopting kafetrain
+
+### Use Layer 3 (Full Wrapper) when:
 - ✅ Starting a new project
-- ✅ You want convenience over control
 - ✅ Simple, straightforward use cases
-- ✅ You prefer middleware composition
+- ✅ You prefer convenience over control
+- ✅ You like middleware composition patterns
 
 ## Examples
 

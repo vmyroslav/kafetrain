@@ -70,13 +70,14 @@ func TestIntegration_FIFOOrdering(t *testing.T) {
 		return nil
 	})
 
-	registry := resilience.NewHandlerRegistry()
-	registry.Add(topic, handler)
-
-	tracker, err := resilience.NewTracker(&cfg, logger, resilience.NewKeyTracker(), registry)
+	tracker, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
 	require.NoError(t, err)
 
-	err = tracker.StartRetryConsumers(ctx, topic)
+	err = tracker.StartTracking(ctx, topic)
+	require.NoError(t, err)
+
+	retryMgr := resilience.NewRetryManager(tracker, handler)
+	err = retryMgr.StartRetryConsumer(ctx, topic)
 	require.NoError(t, err)
 
 	consumer, err := resilience.NewKafkaConsumer(&cfg, logger)

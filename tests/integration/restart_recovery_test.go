@@ -58,15 +58,16 @@ func TestIntegration_RestartRecovery(t *testing.T) {
 		return nil
 	})
 
-	registry := resilience.NewHandlerRegistry()
-	registry.Add(topic, handler)
-
 	// === PHASE 1: Initial tracker setup and failure ===
-	tracker1, err := resilience.NewTracker(&cfg, logger, resilience.NewKeyTracker(), registry)
+	tracker1, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
 	require.NoError(t, err, "failed to create first tracker")
 
-	err = tracker1.StartRetryConsumers(ctx, topic)
-	require.NoError(t, err, "failed to start first tracker")
+	err = tracker1.StartTracking(ctx, topic)
+	require.NoError(t, err, "failed to start first tracking")
+
+	retryMgr1 := resilience.NewRetryManager(tracker1, handler)
+	err = retryMgr1.StartRetryConsumer(ctx, topic)
+	require.NoError(t, err, "failed to start first retry consumer")
 
 	consumer1, err := resilience.NewKafkaConsumer(&cfg, logger)
 	require.NoError(t, err, "failed to create consumer")
@@ -108,11 +109,15 @@ func TestIntegration_RestartRecovery(t *testing.T) {
 	// === PHASE 3: Start new tracker (should recover state from redirect topic) ===
 	logger.Info("starting second tracker - should recover state from redirect topic")
 
-	tracker2, err := resilience.NewTracker(&cfg, logger, resilience.NewKeyTracker(), registry)
+	tracker2, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
 	require.NoError(t, err, "failed to create second tracker")
 
-	err = tracker2.StartRetryConsumers(ctx, topic)
-	require.NoError(t, err, "failed to start second tracker")
+	err = tracker2.StartTracking(ctx, topic)
+	require.NoError(t, err, "failed to start second tracking")
+
+	retryMgr2 := resilience.NewRetryManager(tracker2, handler)
+	err = retryMgr2.StartRetryConsumer(ctx, topic)
+	require.NoError(t, err, "failed to start second retry consumer")
 
 	consumer2, err := resilience.NewKafkaConsumer(&cfg, logger)
 	require.NoError(t, err, "failed to create second consumer")

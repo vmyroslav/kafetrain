@@ -115,13 +115,16 @@ func TestIntegration_StandaloneFlow(t *testing.T) {
 		processedMsgs  []string
 	)
 
-	// 1. Create standalone ErrorTracker (no Consumer wrapper)
-	// Note: For standalone usage, we still need a registry for the retry consumer
-	// The retry consumer processes messages from the retry topic using the registered handler
-	registry := resilience.NewHandlerRegistry()
+	// 1. Create standalone ErrorTracker
+	tracker, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
+	require.NoError(t, err, "failed to create tracker")
+
+	// Start tracking (only redirect consumer)
+	err = tracker.StartTracking(ctx, topic)
+	require.NoError(t, err, "failed to start tracking")
 
 	// Create the business logic processor
-	// This processor is used by BOTH main consumer and retry consumer
+	// This processor is used by BOTH main and retry consumers (DRY!)
 	processor := &testMessageProcessor{
 		logger:         logger,
 		firstAttempts:  &firstAttempts,
@@ -131,33 +134,28 @@ func TestIntegration_StandaloneFlow(t *testing.T) {
 		processedMsgs:  &processedMsgs,
 	}
 
-	// Register handler using adapter - converts Sarama handler to MessageHandler
-	// This is the KEY: same business logic used by retry consumer via adapter
-	registry.Add(topic, resilience.ToMessageHandler(processor.process))
-
-	tracker, err := resilience.NewTracker(&cfg, logger, resilience.NewKeyTracker(), registry)
-	require.NoError(t, err, "failed to create tracker")
-
-	// 2. Start retry consumers independently
-	err = tracker.StartRetryConsumers(ctx, topic)
-	require.NoError(t, err, "failed to start retry consumers")
-
-	// 3. Create raw Sarama consumer (NOT kafetrain Consumer)
+	// 2. Create Sarama config (for both consumers)
 	saramaConfig := sarama.NewConfig()
 	saramaConfig.Version = sarama.V4_1_0_0
 	saramaConfig.Consumer.Return.Errors = true
 	saramaConfig.Consumer.Group.Rebalance.Strategy = sarama.NewBalanceStrategyRoundRobin()
 	saramaConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
 
-	consumerGroup, err := sarama.NewConsumerGroup([]string{broker}, cfg.GroupID, saramaConfig)
-	require.NoError(t, err, "failed to create Sarama consumer group")
-	defer consumerGroup.Close()
+	// 3. Create MAIN consumer for primary topic
+	mainConsumer, err := sarama.NewConsumerGroup([]string{broker}, cfg.GroupID, saramaConfig)
+	require.NoError(t, err, "failed to create main consumer")
+	defer mainConsumer.Close()
 
-	// 4. Create custom handler implementing sarama.ConsumerGroupHandler
+	// 4. Create RETRY consumer for retry topic (Layer 1: YOU control both!)
+	retryConsumer, err := sarama.NewConsumerGroup([]string{broker}, cfg.GroupID+"-retry", saramaConfig)
+	require.NoError(t, err, "failed to create retry consumer")
+	defer retryConsumer.Close()
+
+	// 5. Create handler - SAME handler for BOTH consumers (DRY!)
 	handler := &standaloneTestHandler{
 		tracker:   tracker,
 		logger:    logger,
-		processor: processor, // Share the same processor with retry consumer
+		processor: processor,
 	}
 
 	// Start consumption
@@ -165,12 +163,29 @@ func TestIntegration_StandaloneFlow(t *testing.T) {
 	defer consumerCancel()
 
 	var wg sync.WaitGroup
+
+	// Start MAIN consumer
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for {
-			if err := consumerGroup.Consume(consumerCtx, []string{topic}, handler); err != nil {
-				logger.Error("consumer error", zap.Error(err))
+			if err := mainConsumer.Consume(consumerCtx, []string{topic}, handler); err != nil {
+				logger.Error("main consumer error", zap.Error(err))
+			}
+			if consumerCtx.Err() != nil {
+				return
+			}
+		}
+	}()
+
+	// Start RETRY consumer (Layer 1: user manages it!)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		retryTopic := tracker.GetRetryTopic(topic)
+		for {
+			if err := retryConsumer.Consume(consumerCtx, []string{retryTopic}, handler); err != nil {
+				logger.Error("retry consumer error", zap.Error(err))
 			}
 			if consumerCtx.Err() != nil {
 				return
@@ -329,16 +344,18 @@ func TestIntegration_StandaloneFlow_NonRetriableError(t *testing.T) {
 	)
 
 	// Create tracker
-	registry := resilience.NewHandlerRegistry()
-	tracker, err := resilience.NewTracker(&cfg, logger, resilience.NewKeyTracker(), registry)
+	tracker, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
+	require.NoError(t, err)
+
+	err = tracker.StartTracking(ctx, topic)
 	require.NoError(t, err)
 
 	dummyHandler := resilience.MessageHandleFunc(func(_ context.Context, msg *resilience.Message) error {
 		return nil
 	})
-	registry.Add(topic, dummyHandler)
 
-	err = tracker.StartRetryConsumers(ctx, topic)
+	retryMgr := resilience.NewRetryManager(tracker, dummyHandler)
+	err = retryMgr.StartRetryConsumer(ctx, topic)
 	require.NoError(t, err)
 
 	// Create Sarama consumer

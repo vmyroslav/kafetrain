@@ -2,7 +2,6 @@ package resilience
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/IBM/sarama"
@@ -25,25 +24,26 @@ type ErrorTracker struct {
 	backoffStrategy BackoffStrategy
 	logger          *zap.Logger
 	producer        *producer
-	registry        *HandlerRegistry
 	errors          chan error
 	cfg             *Config
 }
 
-func NewTracker(
+// NewErrorTracker creates a new ErrorTracker for standalone usage (Layer 1).
+// This tracker only manages redirect topic and tracking logic.
+// Users must run their own retry consumer.
+func NewErrorTracker(
 	cfg *Config,
 	logger *zap.Logger,
 	comparator MessageChainTracker,
-	registry *HandlerRegistry,
 ) (*ErrorTracker, error) {
-	return NewTrackerWithBackoff(cfg, logger, comparator, registry, nil)
+	return NewErrorTrackerWithBackoff(cfg, logger, comparator, nil)
 }
 
-func NewTrackerWithBackoff(
+// NewErrorTrackerWithBackoff creates a new ErrorTracker with custom backoff strategy.
+func NewErrorTrackerWithBackoff(
 	cfg *Config,
 	logger *zap.Logger,
 	comparator MessageChainTracker,
-	registry *HandlerRegistry,
 	backoff BackoffStrategy,
 ) (*ErrorTracker, error) {
 	if comparator == nil {
@@ -62,7 +62,6 @@ func NewTrackerWithBackoff(
 	t := ErrorTracker{
 		cfg:             cfg,
 		logger:          logger,
-		registry:        registry,
 		producer:        producer,
 		comparator:      comparator,
 		backoffStrategy: backoff,
@@ -72,10 +71,10 @@ func NewTrackerWithBackoff(
 	return &t, nil
 }
 
-// StartRetryConsumers starts the retry and redirect topic consumers independently.
-// This allows the ErrorTracker to work standalone with any consumer implementation.
-// Users handle the main topic consumption themselves and call Redirect/Free manually.
-func (t *ErrorTracker) StartRetryConsumers(ctx context.Context, topic string) error {
+// StartTracking starts the redirect topic consumer to manage message chain tracking.
+// This is the Layer 1 API - users run their own retry consumer.
+// For managed retry consumers, use RetryManager (Layer 2).
+func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
 	if err := t.ensureTopicsExist(topic); err != nil {
 		return err
 	}
@@ -84,7 +83,7 @@ func (t *ErrorTracker) StartRetryConsumers(ctx context.Context, topic string) er
 		return err
 	}
 
-	return t.startConsumers(ctx, topic)
+	return t.startRedirectConsumer(ctx, topic)
 }
 
 func (t *ErrorTracker) ensureTopicsExist(topic string) error {
@@ -217,26 +216,9 @@ func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
 	return nil
 }
 
-func (t *ErrorTracker) startConsumers(ctx context.Context, topic string) error {
-	// create separate consumer group IDs to avoid rebalancing conflicts
-	// each consumer needs its own group since they consume different topics
-	retryCfg := *t.cfg
-	retryCfg.GroupID = t.cfg.GroupID + "-retry"
-
-	retryConsumer, err := NewKafkaConsumer(&retryCfg, t.logger)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	handler, ok := t.registry.Get(topic)
-	if !ok || handler == nil {
-		return fmt.Errorf("handler for topic: %s not found", topic)
-	}
-
-	go func() {
-		_ = retryConsumer.WithMiddlewares(NewRetryMiddleware(t)).Consume(ctx, t.retryTopic(topic), handler)
-	}()
-
+// startRedirectConsumer starts only the redirect topic consumer.
+// This consumer processes tombstones to release messages from tracking.
+func (t *ErrorTracker) startRedirectConsumer(ctx context.Context, topic string) error {
 	redirectCfg := *t.cfg
 	redirectCfg.GroupID = t.cfg.GroupID + "-redirect"
 
@@ -252,8 +234,37 @@ func (t *ErrorTracker) startConsumers(ctx context.Context, topic string) error {
 	return nil
 }
 
+// startRetryConsumerWithHandler is an internal helper for starting retry consumer.
+// This is used by RetryManager (Layer 2) to manage retry consumer lifecycle.
+func (t *ErrorTracker) startRetryConsumerWithHandler(
+	ctx context.Context,
+	topic string,
+	handler MessageHandler,
+) error {
+	retryCfg := *t.cfg
+	retryCfg.GroupID = t.cfg.GroupID + "-retry"
+
+	retryConsumer, err := NewKafkaConsumer(&retryCfg, t.logger)
+	if err != nil {
+		return errors.WithStack(err)
+	}
+
+	go func() {
+		_ = retryConsumer.WithMiddlewares(NewRetryMiddleware(t)).
+			Consume(ctx, t.retryTopic(topic), handler)
+	}()
+
+	return nil
+}
+
 func (t *ErrorTracker) Errors() <-chan error {
 	return t.errors
+}
+
+// GetRetryTopic returns the retry topic name for a given primary topic.
+// This allows users to manually consume retry messages (Layer 1 usage).
+func (t *ErrorTracker) GetRetryTopic(topic string) string {
+	return t.retryTopic(topic)
 }
 
 // IsInRetryChain checks if a Sarama message is already in the retry chain.
