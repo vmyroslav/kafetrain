@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vmyroslav/kafetrain/resilience"
+	"github.com/vmyroslav/kafetrain/retryold"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 )
@@ -39,11 +40,11 @@ func TestIntegration_DLQFlow(t *testing.T) {
 	// Create handler that always fails
 	var attemptCount atomic.Int32
 
-	handler := resilience.MessageHandleFunc(func(_ context.Context, msg *resilience.Message) error {
+	handler := retryold.MessageHandleFunc(func(_ context.Context, msg *retryold.Message) error {
 		attempt := attemptCount.Add(1)
 
 		// Get retry attempt from headers to understand which consumer is calling this
-		headerAttempt, hasHeader := resilience.GetHeaderValue[int](&msg.Headers, resilience.HeaderRetryAttempt)
+		headerAttempt, hasHeader := retryold.GetHeaderValue[int](&msg.Headers, retryold.HeaderRetryAttempt)
 
 		logger.Info("handler invoked (will fail)",
 			zap.Int32("handler_call_count", attempt),
@@ -54,30 +55,30 @@ func TestIntegration_DLQFlow(t *testing.T) {
 		)
 
 		// Always fail with retriable error
-		return resilience.RetriableError{
+		return retryold.RetriableError{
 			Retry:  true,
 			Origin: fmt.Errorf("persistent failure on handler call %d (header attempt: %d)", attempt, headerAttempt),
 		}
 	})
 
 	// Create registry and tracker
-	tracker, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
+	tracker, err := retryold.NewErrorTracker(&cfg, logger, retryold.NewKeyTracker())
 	require.NoError(t, err, "failed to create tracker")
 
 	err = tracker.StartTracking(ctx, topic)
 	require.NoError(t, err, "failed to start tracking")
 
-	retryMgr := resilience.NewRetryManager(tracker, handler)
+	retryMgr := retryold.NewRetryManager(tracker, handler)
 	err = retryMgr.StartRetryConsumer(ctx, topic)
 	require.NoError(t, err, "failed to start retry consumer")
 
 	// Create primary consumer
-	consumer, err := resilience.NewKafkaConsumer(&cfg, logger)
+	consumer, err := retryold.NewKafkaConsumer(&cfg, logger)
 	require.NoError(t, err, "failed to create consumer")
 
 	consumer.WithMiddlewares(
-		resilience.NewLoggingMiddleware(logger),
-		resilience.NewErrorHandlingMiddleware(tracker),
+		retryold.NewLoggingMiddleware(logger),
+		retryold.NewErrorHandlingMiddleware(tracker),
 	)
 
 	// Start consuming in background
@@ -100,22 +101,22 @@ func TestIntegration_DLQFlow(t *testing.T) {
 	dlqTopic := cfg.DLQTopicPrefix + "_" + topic
 	dlqCfg := cfg
 	dlqCfg.GroupID = cfg.GroupID + "-dlq"
-	dlqConsumer, err := resilience.NewKafkaConsumer(&dlqCfg, logger)
+	dlqConsumer, err := retryold.NewKafkaConsumer(&dlqCfg, logger)
 	require.NoError(t, err, "failed to create DLQ consumer")
 
 	var dlqMessageReceived atomic.Bool
-	dlqHandler := resilience.MessageHandleFunc(func(_ context.Context, msg *resilience.Message) error {
+	dlqHandler := retryold.MessageHandleFunc(func(_ context.Context, msg *retryold.Message) error {
 		logger.Info("received message from DLQ",
 			zap.String("payload", string(msg.Payload)),
 			zap.Any("headers", msg.Headers),
 		)
 
 		// Verify DLQ headers are present
-		reason, ok := resilience.GetHeaderValue[string](&msg.Headers, "x-dlq-reason")
+		reason, ok := retryold.GetHeaderValue[string](&msg.Headers, "x-dlq-reason")
 		assert.True(t, ok, "DLQ message should have x-dlq-reason header")
 		assert.Contains(t, reason, "persistent failure", "DLQ reason should contain error message")
 
-		sourceTopicVal, ok := resilience.GetHeaderValue[string](&msg.Headers, "x-dlq-source-topic")
+		sourceTopicVal, ok := retryold.GetHeaderValue[string](&msg.Headers, "x-dlq-source-topic")
 		assert.True(t, ok, "DLQ message should have x-dlq-source-topic header")
 		assert.Equal(t, topic, sourceTopicVal, "source topic should match original topic")
 

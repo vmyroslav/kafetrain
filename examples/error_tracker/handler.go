@@ -16,20 +16,20 @@ func NewHandlerExample(logger *zap.Logger) *HandlerExample {
 	return &HandlerExample{logger: logger}
 }
 
-func (h *HandlerExample) Handle(_ context.Context, msg *resilience.Message) error {
+func (h *HandlerExample) Handle(_ context.Context, msg *retryold.Message) error {
 	h.logger.Info(
 		"handle",
 		zap.String("key", string(msg.Key)),
 		zap.String("payload", string(msg.Payload)),
 	)
 
-	_, isRetry := resilience.GetHeaderValue[string](&msg.Headers, "retry")
+	_, isRetry := retryold.GetHeaderValue[string](&msg.Headers, "retry")
 	if isRetry {
 		h.logger.Info("retry in handler", zap.String("key", string(msg.Key)))
 		// return nil
 	}
 
-	return resilience.RetriableError{
+	return retryold.RetriableError{
 		Origin: errors.New("error"),
 		Retry:  true,
 	}

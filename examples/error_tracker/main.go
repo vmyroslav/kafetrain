@@ -30,7 +30,7 @@ func main() {
 	defer cancel()
 
 	// Layer 1: Create ErrorTracker
-	tracker, err := resilience.NewErrorTracker(&cfg.KafkaConfig, logger, resilience.NewKeyTracker())
+	tracker, err := retryold.NewErrorTracker(&cfg.KafkaConfig, logger, retryold.NewKeyTracker())
 	if err != nil {
 		logger.Fatal("could not initialize error tracker", zap.Error(err))
 	}
@@ -41,21 +41,21 @@ func main() {
 
 	// Layer 2: Create RetryManager for managed retry consumer
 	handler := NewHandlerExample(logger)
-	retryMgr := resilience.NewRetryManager(tracker, handler)
+	retryMgr := retryold.NewRetryManager(tracker, handler)
 
 	if err = retryMgr.StartRetryConsumer(ctx, cfg.Topic); err != nil {
 		logger.Fatal("could not start retry consumer", zap.Error(err))
 	}
 
 	// Layer 3: Use KafkaConsumer wrapper
-	kafkaConsumer, err := resilience.NewKafkaConsumer(&cfg.KafkaConfig, logger)
+	kafkaConsumer, err := retryold.NewKafkaConsumer(&cfg.KafkaConfig, logger)
 	if err != nil {
 		logger.Fatal("could not create kafka consumer", zap.Error(err))
 	}
 
 	kafkaConsumer.WithMiddlewares(
-		resilience.NewLoggingMiddleware(logger),
-		resilience.NewErrorHandlingMiddleware(tracker),
+		retryold.NewLoggingMiddleware(logger),
+		retryold.NewErrorHandlingMiddleware(tracker),
 	)
 
 	go func() {
@@ -74,7 +74,7 @@ func main() {
 	}
 }
 
-func shutdown(c resilience.Consumer, logger *zap.Logger) {
+func shutdown(c retryold.Consumer, logger *zap.Logger) {
 	var wg sync.WaitGroup
 
 	wg.Add(1)

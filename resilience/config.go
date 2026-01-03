@@ -1,21 +1,48 @@
 package resilience
 
+// Config holds configuration for the retry mechanism.
 type Config struct {
-	RedirectTopicPrefix  string   `envconfig:"KAFKA_REDIRECT_TOPIC_PREFIX" default:"redirect"`
-	DLQTopicPrefix       string   `envconfig:"KAFKA_DLQ_TOPIC_PREFIX" default:"dlq"`
-	GroupID              string   `envconfig:"KAFKA_GROUP_ID" required:"true"`
-	ClientID             string   `envconfig:"KAFKA_CLIENT_ID" default:"kafetrain-consumer"`
-	Username             string   `envconfig:"KAFKA_USERNAME"`
-	Password             string   `envconfig:"KAFKA_PASSWORD"`
-	Version              string   `envconfig:"KAFKA_VERSION" required:"true"`
-	CACert               string   `envconfig:"KAFKA_CA_CERT"`
-	RetryTopicPrefix     string   `envconfig:"KAFKA_RETRY_TOPIC_PREFIX" default:"retry"`
-	Brokers              []string `envconfig:"KAFKA_BROKERS" required:"true"`
-	InitialOffset        int64    `envconfig:"KAFKA_CONSUMER_INITIAL_OFFSET" default:"-2"`
-	MaxRetries           int      `envconfig:"KAFKA_MAX_RETRIES" default:"5"`
-	RetryTopicPartitions int32    `envconfig:"KAFKA_RETRY_TOPIC_PARTITIONS" default:"1"`
-	BuffSize             uint16   `envconfig:"KAFKA_BUFF_SIZE" default:"256"`
-	MaxProcessingTime    uint16   `envconfig:"KAFKA_MAX_PROCESSING_TIME_MS" default:"100"`
-	FreeOnDLQ            bool     `envconfig:"KAFKA_DLQ_FREE_ON_SEND" default:"false"`
-	Silent               bool     `envconfig:"KAFKA_CONSUMER_SILENT" default:"false"`
+	// Topic naming
+	RedirectTopicPrefix string
+	DLQTopicPrefix      string
+	RetryTopicPrefix    string
+
+	// Kafka connection
+	Brokers []string
+	GroupID string
+	Version string
+
+	// Optional authentication
+	ClientID string
+	Username string
+	Password string
+	CACert   string
+
+	// Retry behavior
+	MaxRetries           int
+	RetryTopicPartitions int32
+	FreeOnDLQ            bool
+
+	// Consumer settings
+	InitialOffset     int64
+	BuffSize          uint16
+	MaxProcessingTime uint16
+	Silent            bool
+}
+
+// NewDefaultConfig creates a Config with sensible defaults.
+func NewDefaultConfig() *Config {
+	return &Config{
+		RedirectTopicPrefix:  "redirect",
+		DLQTopicPrefix:       "dlq",
+		RetryTopicPrefix:     "retry",
+		ClientID:             "kafetrain-consumer",
+		MaxRetries:           5,
+		RetryTopicPartitions: 1,
+		InitialOffset:        -2, // OffsetOldest
+		BuffSize:             256,
+		MaxProcessingTime:    100,
+		FreeOnDLQ:            false,
+		Silent:               false,
+	}
 }

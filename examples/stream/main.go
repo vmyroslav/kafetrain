@@ -21,7 +21,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	kCfg := resilience.Config{
+	kCfg := retryold.Config{
 		Brokers:           []string{"localhost:9092"},
 		Version:           "4.1.0",
 		GroupID:           "example-simple-consumer",
@@ -33,7 +33,7 @@ func main() {
 		Silent:            true,
 	}
 
-	kafkaConsumer, err := resilience.NewKafkaConsumer(
+	kafkaConsumer, err := retryold.NewKafkaConsumer(
 		&kCfg,
 		logger,
 	)
@@ -41,7 +41,7 @@ func main() {
 		logger.Fatal("could not create kafka consumer", zap.Error(err))
 	}
 
-	msgCh, errCh := kafkaConsumer.WithMiddlewares(resilience.NewFilterMiddleware(func(msg *resilience.Message) bool {
+	msgCh, errCh := kafkaConsumer.WithMiddlewares(retryold.NewFilterMiddleware(func(msg *retryold.Message) bool {
 		return (string(msg.Key)) != "1"
 	})).Stream(ctx, "hello-world")
 

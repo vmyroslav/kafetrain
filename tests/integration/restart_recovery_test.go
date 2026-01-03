@@ -39,14 +39,14 @@ func TestIntegration_RestartRecovery(t *testing.T) {
 	var processedOnce sync.Once
 	var processedCh = make(chan struct{})
 
-	handler := resilience.MessageHandleFunc(func(_ context.Context, msg *resilience.Message) error {
+	handler := retryold.MessageHandleFunc(func(_ context.Context, msg *retryold.Message) error {
 		attempt := attemptCount.Add(1)
 		logger.Info("handler invoked",
 			zap.Int32("attempt", attempt),
 		)
 
 		if attempt == 1 {
-			return resilience.RetriableError{
+			return retryold.RetriableError{
 				Retry:  true,
 				Origin: fmt.Errorf("failure before restart"),
 			}
@@ -59,22 +59,22 @@ func TestIntegration_RestartRecovery(t *testing.T) {
 	})
 
 	// === PHASE 1: Initial tracker setup and failure ===
-	tracker1, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
+	tracker1, err := retryold.NewErrorTracker(&cfg, logger, retryold.NewKeyTracker())
 	require.NoError(t, err, "failed to create first tracker")
 
 	err = tracker1.StartTracking(ctx, topic)
 	require.NoError(t, err, "failed to start first tracking")
 
-	retryMgr1 := resilience.NewRetryManager(tracker1, handler)
+	retryMgr1 := retryold.NewRetryManager(tracker1, handler)
 	err = retryMgr1.StartRetryConsumer(ctx, topic)
 	require.NoError(t, err, "failed to start first retry consumer")
 
-	consumer1, err := resilience.NewKafkaConsumer(&cfg, logger)
+	consumer1, err := retryold.NewKafkaConsumer(&cfg, logger)
 	require.NoError(t, err, "failed to create consumer")
 
 	consumer1.WithMiddlewares(
-		resilience.NewLoggingMiddleware(logger),
-		resilience.NewErrorHandlingMiddleware(tracker1),
+		retryold.NewLoggingMiddleware(logger),
+		retryold.NewErrorHandlingMiddleware(tracker1),
 	)
 
 	consumer1Ctx, consumer1Cancel := context.WithCancel(ctx)
@@ -109,22 +109,22 @@ func TestIntegration_RestartRecovery(t *testing.T) {
 	// === PHASE 3: Start new tracker (should recover state from redirect topic) ===
 	logger.Info("starting second tracker - should recover state from redirect topic")
 
-	tracker2, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
+	tracker2, err := retryold.NewErrorTracker(&cfg, logger, retryold.NewKeyTracker())
 	require.NoError(t, err, "failed to create second tracker")
 
 	err = tracker2.StartTracking(ctx, topic)
 	require.NoError(t, err, "failed to start second tracking")
 
-	retryMgr2 := resilience.NewRetryManager(tracker2, handler)
+	retryMgr2 := retryold.NewRetryManager(tracker2, handler)
 	err = retryMgr2.StartRetryConsumer(ctx, topic)
 	require.NoError(t, err, "failed to start second retry consumer")
 
-	consumer2, err := resilience.NewKafkaConsumer(&cfg, logger)
+	consumer2, err := retryold.NewKafkaConsumer(&cfg, logger)
 	require.NoError(t, err, "failed to create second consumer")
 
 	consumer2.WithMiddlewares(
-		resilience.NewLoggingMiddleware(logger),
-		resilience.NewErrorHandlingMiddleware(tracker2),
+		retryold.NewLoggingMiddleware(logger),
+		retryold.NewErrorHandlingMiddleware(tracker2),
 	)
 
 	consumer2Ctx, consumer2Cancel := context.WithCancel(ctx)

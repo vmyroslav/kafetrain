@@ -41,7 +41,7 @@ func TestIntegration_FullRetryFlow(t *testing.T) {
 	var processedOnce sync.Once
 	var processedCh = make(chan struct{})
 
-	handler := resilience.MessageHandleFunc(func(_ context.Context, msg *resilience.Message) error {
+	handler := retryold.MessageHandleFunc(func(_ context.Context, msg *retryold.Message) error {
 		attempt := attemptCount.Add(1)
 		logger.Info("handler invoked",
 			zap.Int32("attempt", attempt),
@@ -50,7 +50,7 @@ func TestIntegration_FullRetryFlow(t *testing.T) {
 
 		if attempt == 1 {
 			// First attempt: fail with retriable error
-			return resilience.RetriableError{
+			return retryold.RetriableError{
 				Retry:  true,
 				Origin: fmt.Errorf("simulated failure on attempt %d", attempt),
 			}
@@ -65,24 +65,24 @@ func TestIntegration_FullRetryFlow(t *testing.T) {
 	})
 
 	// Create tracker (Layer 1)
-	tracker, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
+	tracker, err := retryold.NewErrorTracker(&cfg, logger, retryold.NewKeyTracker())
 	require.NoError(t, err, "failed to create tracker")
 
 	err = tracker.StartTracking(ctx, topic)
 	require.NoError(t, err, "failed to start tracking")
 
 	// Create retry manager (Layer 2)
-	retryMgr := resilience.NewRetryManager(tracker, handler)
+	retryMgr := retryold.NewRetryManager(tracker, handler)
 	err = retryMgr.StartRetryConsumer(ctx, topic)
 	require.NoError(t, err, "failed to start retry consumer")
 
 	// Create primary consumer
-	consumer, err := resilience.NewKafkaConsumer(&cfg, logger)
+	consumer, err := retryold.NewKafkaConsumer(&cfg, logger)
 	require.NoError(t, err, "failed to create consumer")
 
 	consumer.WithMiddlewares(
-		resilience.NewLoggingMiddleware(logger),
-		resilience.NewErrorHandlingMiddleware(tracker),
+		retryold.NewLoggingMiddleware(logger),
+		retryold.NewErrorHandlingMiddleware(tracker),
 	)
 
 	// Start consuming in background

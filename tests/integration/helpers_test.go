@@ -35,13 +35,13 @@ func setupKafkaContainer(t *testing.T, ctx context.Context) (string, func()) {
 }
 
 // createTestConfig creates a Config for testing with the given broker address.
-func createTestConfig(broker string, groupID string) resilience.Config {
-	return resilience.Config{
+func createTestConfig(broker string, groupID string) retryold.Config {
+	return retryold.Config{
 		Brokers:              []string{broker},
 		Version:              "4.1.0",
 		GroupID:              groupID,
 		ClientID:             "test-client",
-		InitialOffset:        resilience.OffsetOldest,
+		InitialOffset:        retryold.OffsetOldest,
 		MaxProcessingTime:    100,
 		RetryTopicPrefix:     "retry",
 		RedirectTopicPrefix:  "redirect",

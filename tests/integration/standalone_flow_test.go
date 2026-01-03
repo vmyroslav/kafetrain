@@ -41,7 +41,7 @@ func (p *testMessageProcessor) process(ctx context.Context, msg *sarama.Consumer
 		)
 
 		if attempt <= 2 {
-			return resilience.RetriableError{
+			return retryold.RetriableError{
 				Retry:  true,
 				Origin: fmt.Errorf("simulated failure for first message (attempt %d)", attempt),
 			}
@@ -61,7 +61,7 @@ func (p *testMessageProcessor) process(ctx context.Context, msg *sarama.Consumer
 		)
 
 		if attempt == 1 {
-			return resilience.RetriableError{
+			return retryold.RetriableError{
 				Retry:  true,
 				Origin: fmt.Errorf("simulated failure for second message (attempt %d)", attempt),
 			}
@@ -116,7 +116,7 @@ func TestIntegration_StandaloneFlow(t *testing.T) {
 	)
 
 	// 1. Create standalone ErrorTracker
-	tracker, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
+	tracker, err := retryold.NewErrorTracker(&cfg, logger, retryold.NewKeyTracker())
 	require.NoError(t, err, "failed to create tracker")
 
 	// Start tracking (only redirect consumer)
@@ -247,7 +247,7 @@ func TestIntegration_StandaloneFlow(t *testing.T) {
 // standaloneTestHandler implements sarama.ConsumerGroupHandler
 // This demonstrates how users would integrate ErrorTracker with their own Sarama consumer
 type standaloneTestHandler struct {
-	tracker   *resilience.ErrorTracker
+	tracker   *retryold.ErrorTracker
 	logger    *zap.Logger
 	processor *testMessageProcessor // Shared business logic processor
 }
@@ -273,8 +273,8 @@ func (h *standaloneTestHandler) ConsumeClaim(
 		h.logger.Info("processing message",
 			zap.String("payload", string(msg.Value)),
 			zap.Int64("offset", msg.Offset),
-			zap.Bool("is_retry", resilience.IsRetryMessage(msg)),
-			zap.Int("retry_attempt", resilience.GetRetryAttempt(msg)),
+			zap.Bool("is_retry", retryold.IsRetryMessage(msg)),
+			zap.Int("retry_attempt", retryold.GetRetryAttempt(msg)),
 		)
 
 		// Process message using the SAME processor as retry consumer
@@ -282,7 +282,7 @@ func (h *standaloneTestHandler) ConsumeClaim(
 
 		if err != nil {
 			// Check if retriable (using helper)
-			if resilience.IsRetriable(err) {
+			if retryold.IsRetriable(err) {
 				h.logger.Warn("retriable error, redirecting",
 					zap.String("payload", string(msg.Value)),
 					zap.Error(err),
@@ -304,10 +304,10 @@ func (h *standaloneTestHandler) ConsumeClaim(
 		}
 
 		// Success! Free from tracking if it was a retry message
-		if resilience.IsRetryMessage(msg) {
+		if retryold.IsRetryMessage(msg) {
 			h.logger.Info("freeing retry message from tracking",
 				zap.String("payload", string(msg.Value)),
-				zap.Int("attempts", resilience.GetRetryAttempt(msg)),
+				zap.Int("attempts", retryold.GetRetryAttempt(msg)),
 			)
 
 			// Free from tracking (NEW PUBLIC API)
@@ -344,17 +344,17 @@ func TestIntegration_StandaloneFlow_NonRetriableError(t *testing.T) {
 	)
 
 	// Create tracker
-	tracker, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
+	tracker, err := retryold.NewErrorTracker(&cfg, logger, retryold.NewKeyTracker())
 	require.NoError(t, err)
 
 	err = tracker.StartTracking(ctx, topic)
 	require.NoError(t, err)
 
-	dummyHandler := resilience.MessageHandleFunc(func(_ context.Context, msg *resilience.Message) error {
+	dummyHandler := retryold.MessageHandleFunc(func(_ context.Context, msg *retryold.Message) error {
 		return nil
 	})
 
-	retryMgr := resilience.NewRetryManager(tracker, dummyHandler)
+	retryMgr := retryold.NewRetryManager(tracker, dummyHandler)
 	err = retryMgr.StartRetryConsumer(ctx, topic)
 	require.NoError(t, err)
 
@@ -421,7 +421,7 @@ func TestIntegration_StandaloneFlow_NonRetriableError(t *testing.T) {
 }
 
 type nonRetriableTestHandler struct {
-	tracker         *resilience.ErrorTracker
+	tracker         *retryold.ErrorTracker
 	logger          *zap.Logger
 	processAttempts *atomic.Int32
 	errorReturned   *atomic.Bool
@@ -448,7 +448,7 @@ func (h *nonRetriableTestHandler) ConsumeClaim(
 		err := fmt.Errorf("invalid message format: %s", payload)
 
 		// Check if retriable (should be false)
-		if resilience.IsRetriable(err) {
+		if retryold.IsRetriable(err) {
 			h.tracker.Redirect(session.Context(), msg, err)
 			session.MarkMessage(msg, "")
 			continue

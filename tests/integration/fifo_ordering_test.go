@@ -39,7 +39,7 @@ func TestIntegration_FIFOOrdering(t *testing.T) {
 	var allProcessedCh = make(chan struct{})
 	var closeOnce sync.Once
 
-	handler := resilience.MessageHandleFunc(func(_ context.Context, msg *resilience.Message) error {
+	handler := retryold.MessageHandleFunc(func(_ context.Context, msg *retryold.Message) error {
 		payload := string(msg.Payload)
 
 		mu.Lock()
@@ -51,7 +51,7 @@ func TestIntegration_FIFOOrdering(t *testing.T) {
 
 		// First message (msg-1) fails, rest succeed
 		if payload == "msg-1" {
-			return resilience.RetriableError{
+			return retryold.RetriableError{
 				Retry:  true,
 				Origin: fmt.Errorf("simulated failure for first message"),
 			}
@@ -70,22 +70,22 @@ func TestIntegration_FIFOOrdering(t *testing.T) {
 		return nil
 	})
 
-	tracker, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
+	tracker, err := retryold.NewErrorTracker(&cfg, logger, retryold.NewKeyTracker())
 	require.NoError(t, err)
 
 	err = tracker.StartTracking(ctx, topic)
 	require.NoError(t, err)
 
-	retryMgr := resilience.NewRetryManager(tracker, handler)
+	retryMgr := retryold.NewRetryManager(tracker, handler)
 	err = retryMgr.StartRetryConsumer(ctx, topic)
 	require.NoError(t, err)
 
-	consumer, err := resilience.NewKafkaConsumer(&cfg, logger)
+	consumer, err := retryold.NewKafkaConsumer(&cfg, logger)
 	require.NoError(t, err)
 
 	consumer.WithMiddlewares(
-		resilience.NewLoggingMiddleware(logger),
-		resilience.NewErrorHandlingMiddleware(tracker),
+		retryold.NewLoggingMiddleware(logger),
+		retryold.NewErrorHandlingMiddleware(tracker),
 	)
 
 	consumerCtx, consumerCancel := context.WithCancel(ctx)

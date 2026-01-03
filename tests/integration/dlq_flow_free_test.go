@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vmyroslav/kafetrain/resilience"
+	"github.com/vmyroslav/kafetrain/retryold"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 )
@@ -40,7 +41,7 @@ func TestIntegration_DLQFlowWithFree(t *testing.T) {
 	var firstMessageAttempts atomic.Int32
 	var secondMessageProcessed atomic.Bool
 
-	handler := resilience.MessageHandleFunc(func(_ context.Context, msg *resilience.Message) error {
+	handler := retryold.MessageHandleFunc(func(_ context.Context, msg *retryold.Message) error {
 		payload := string(msg.Payload)
 
 		if payload == "first-message" {
@@ -51,7 +52,7 @@ func TestIntegration_DLQFlowWithFree(t *testing.T) {
 				zap.String("payload", payload),
 			)
 
-			return resilience.RetriableError{
+			return retryold.RetriableError{
 				Retry:  true,
 				Origin: fmt.Errorf("simulated failure for first message"),
 			}
@@ -67,22 +68,22 @@ func TestIntegration_DLQFlowWithFree(t *testing.T) {
 	})
 
 	// Setup tracker and consumer
-	tracker, err := resilience.NewErrorTracker(&cfg, logger, resilience.NewKeyTracker())
+	tracker, err := retryold.NewErrorTracker(&cfg, logger, retryold.NewKeyTracker())
 	require.NoError(t, err, "failed to create tracker")
 
 	err = tracker.StartTracking(ctx, topic)
 	require.NoError(t, err, "failed to start tracking")
 
-	retryMgr := resilience.NewRetryManager(tracker, handler)
+	retryMgr := retryold.NewRetryManager(tracker, handler)
 	err = retryMgr.StartRetryConsumer(ctx, topic)
 	require.NoError(t, err, "failed to start retry consumer")
 
-	consumer, err := resilience.NewKafkaConsumer(&cfg, logger)
+	consumer, err := retryold.NewKafkaConsumer(&cfg, logger)
 	require.NoError(t, err, "failed to create consumer")
 
 	consumer.WithMiddlewares(
-		resilience.NewLoggingMiddleware(logger),
-		resilience.NewErrorHandlingMiddleware(tracker),
+		retryold.NewLoggingMiddleware(logger),
+		retryold.NewErrorHandlingMiddleware(tracker),
 	)
 
 	consumerCtx, consumerCancel := context.WithCancel(ctx)

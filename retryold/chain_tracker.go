@@ -1,4 +1,4 @@
-package resilience
+package retryold
 
 import (
 	"context"
@@ -6,9 +6,9 @@ import (
 )
 
 type MessageChainTracker interface {
-	IsRelated(ctx context.Context, msg *InternalMessage) bool             // IsRelated returns true if message is related to error chain
-	AddMessage(ctx context.Context, msg *InternalMessage) (string, error) // AddMessage adds message to error chain
-	ReleaseMessage(ctx context.Context, msg *InternalMessage) error       // ReleaseMessage removes message from error chain
+	IsRelated(ctx context.Context, msg *Message) bool             // IsRelated returns true if message is related to error chain
+	AddMessage(ctx context.Context, msg *Message) (string, error) // AddMessage adds message to error chain
+	ReleaseMessage(ctx context.Context, msg *Message) error       // ReleaseMessage removes message from error chain
 }
 
 type KeyTracker struct {
@@ -21,7 +21,7 @@ func NewKeyTracker() *KeyTracker {
 	return &KeyTracker{lm: make(lockMap)}
 }
 
-func (kt *KeyTracker) IsRelated(_ context.Context, msg *InternalMessage) bool {
+func (kt *KeyTracker) IsRelated(_ context.Context, msg *Message) bool {
 	kt.mu.RLock()
 	defer kt.mu.RUnlock()
 
@@ -30,7 +30,7 @@ func (kt *KeyTracker) IsRelated(_ context.Context, msg *InternalMessage) bool {
 	return exists && count > 0
 }
 
-func (kt *KeyTracker) AddMessage(_ context.Context, msg *InternalMessage) (string, error) {
+func (kt *KeyTracker) AddMessage(_ context.Context, msg *Message) (string, error) {
 	kt.mu.Lock()
 	defer kt.mu.Unlock()
 
@@ -42,7 +42,7 @@ func (kt *KeyTracker) AddMessage(_ context.Context, msg *InternalMessage) (strin
 	return key, nil
 }
 
-func (kt *KeyTracker) ReleaseMessage(_ context.Context, msg *InternalMessage) error {
+func (kt *KeyTracker) ReleaseMessage(_ context.Context, msg *Message) error {
 	topic := msg.topic
 	key := string(msg.Key)
 

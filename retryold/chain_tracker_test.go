@@ -1,4 +1,4 @@
-package resilience
+package retryold
 
 import (
 	"testing"
@@ -10,7 +10,7 @@ import (
 func TestKeyTracker_AddMessage(t *testing.T) {
 	t.Parallel()
 
-	msgs := []InternalMessage{
+	msgs := []Message{
 		{Key: []byte("test-1"), topic: "topic-test-1"},
 		{Key: []byte("test-2"), topic: "topic-test-2"},
 		{Key: []byte("test-1"), topic: "topic-test-1"}, // Same key
@@ -32,7 +32,7 @@ func TestKeyTracker_AddMessage(t *testing.T) {
 	}
 
 	// new key should not be related
-	assert.False(t, kt.IsRelated(ctx, &InternalMessage{
+	assert.False(t, kt.IsRelated(ctx, &Message{
 		Key:   []byte("new-key"),
 		topic: "new-topic",
 	}), "new message should not be related")
@@ -44,7 +44,7 @@ func TestKeyTracker_ReleaseMessage(t *testing.T) {
 	kt := NewKeyTracker()
 	ctx := t.Context()
 
-	msg := &InternalMessage{Key: []byte("test"), topic: "topic"}
+	msg := &Message{Key: []byte("test"), topic: "topic"}
 
 	// add 3 times (simulating 3 messages with same key)
 	_, err := kt.AddMessage(ctx, msg)
@@ -79,9 +79,9 @@ func TestKeyTracker_MultipleTopicsAndKeys(t *testing.T) {
 	ctx := t.Context()
 
 	// Test multiple topics with different keys
-	msg1 := &InternalMessage{Key: []byte("key1"), topic: "topic1"}
-	msg2 := &InternalMessage{Key: []byte("key2"), topic: "topic1"}
-	msg3 := &InternalMessage{Key: []byte("key1"), topic: "topic2"}
+	msg1 := &Message{Key: []byte("key1"), topic: "topic1"}
+	msg2 := &Message{Key: []byte("key2"), topic: "topic1"}
+	msg3 := &Message{Key: []byte("key1"), topic: "topic2"}
 
 	// Add messages
 	_, err := kt.AddMessage(ctx, msg1)

@@ -24,7 +24,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	kCfg := resilience.Config{
+	kCfg := retryold.Config{
 		Brokers:           []string{"localhost:9092"},
 		Version:           "4.1.0",
 		GroupID:           "example-simple-consumer",
@@ -37,12 +37,12 @@ func main() {
 	}
 	topic = "hello-world"
 
-	kafkaConsumer, err := resilience.NewKafkaConsumer(
+	kafkaConsumer, err := retryold.NewKafkaConsumer(
 		&kCfg,
 		logger,
 	)
 
-	kafkaConsumer.WithMiddlewares(resilience.NewLoggingMiddleware(logger))
+	kafkaConsumer.WithMiddlewares(retryold.NewLoggingMiddleware(logger))
 
 	if err != nil {
 		logger.Fatal("could not create kafka consumer", zap.Error(err))
@@ -51,7 +51,7 @@ func main() {
 	consumerErrors <- kafkaConsumer.Consume(
 		ctx,
 		topic,
-		resilience.MessageHandleFunc(func(_ context.Context, msg *resilience.Message) error {
+		retryold.MessageHandleFunc(func(_ context.Context, msg *retryold.Message) error {
 			logger.Info("message received", zap.String(
 				"key",
 				string(msg.Key),

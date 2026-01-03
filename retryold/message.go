@@ -1,4 +1,4 @@
-package resilience
+package retryold
 
 import (
 	"bytes"
@@ -20,46 +20,8 @@ const (
 	HeaderRetryReason = "x-retry-reason"
 )
 
-const (
-	// HeaderTopic stores the original topic name
-	HeaderTopic = "topic"
-	headerID    = "id"
-	headerRetry = "retry"
-	headerKey   = "key"
-)
-
-// Message represents a Kafka message
-type Message interface {
-	Topic() string
-	Partition() int32
-	Offset() int64
-
-	Key() []byte
-	Value() []byte
-	Headers() Headers
-	Timestamp() time.Time
-}
-
-// Headers represents message headers.
-type Headers interface {
-	// Get retrieves a header value by key
-	Get(key string) ([]byte, bool)
-
-	// Set adds or updates a header
-	Set(key string, value []byte)
-
-	// Delete removes a header
-	Delete(key string)
-
-	// All returns all headers as a map
-	All() map[string][]byte
-
-	// Clone creates a deep copy of headers
-	Clone() Headers
-}
-
-// InternalMessage is the internal message representation.
-type InternalMessage struct {
+// Message generic kafka message. TODO: add generic type for marshaling
+type Message struct {
 	Timestamp time.Time
 	topic     string
 	Key       []byte
@@ -70,23 +32,18 @@ type InternalMessage struct {
 }
 
 // Topic returns the topic name of the message.
-func (m *InternalMessage) Topic() string {
+func (m *Message) Topic() string {
 	return m.topic
 }
 
 // Offset returns the offset of the message within its partition.
-func (m *InternalMessage) Offset() int64 {
+func (m *Message) Offset() int64 {
 	return m.offset
 }
 
 // Partition returns the partition number of the message.
-func (m *InternalMessage) Partition() int32 {
+func (m *Message) Partition() int32 {
 	return m.partition
-}
-
-// Value returns the message payload.
-func (m *InternalMessage) Value() []byte {
-	return m.Payload
 }
 
 type Header struct {

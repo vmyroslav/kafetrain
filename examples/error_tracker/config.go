@@ -11,7 +11,7 @@ import (
 type Config struct {
 	Topic string `envconfig:"KAFKA_TOPIC" required:"true"`
 
-	KafkaConfig  resilience.Config
+	KafkaConfig  retryold.Config
 	LoggerConfig logging.Config
 }
 
