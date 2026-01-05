@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/IBM/sarama"
-	"github.com/vmyroslav/kafetrain/retry"
+	"github.com/vmyroslav/kafetrain/resilience"
 )
 
 // ConsumerAdapter wraps sarama.ConsumerGroup to implement retry.Consumer interface.
@@ -96,5 +96,6 @@ func (f *ConsumerFactory) NewConsumer(groupID string) (resilience.Consumer, erro
 	if err != nil {
 		return nil, err
 	}
+
 	return NewConsumerAdapter(cg), nil
 }

@@ -2,10 +2,11 @@ package sarama
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/IBM/sarama"
 	"github.com/pkg/errors"
-	"github.com/vmyroslav/kafetrain/retry"
+	"github.com/vmyroslav/kafetrain/resilience"
 )
 
 // AdminAdapter wraps sarama.ClusterAdmin to implement retry.Admin interface.
@@ -25,12 +26,13 @@ func NewAdminAdapterFromClient(client sarama.Client) (resilience.Admin, error) {
 	if err != nil {
 		return nil, errors.WithStack(err)
 	}
+
 	return NewAdminAdapter(admin), nil
 }
 
 // CreateTopic implements retry.Admin interface.
-func (a *AdminAdapter) CreateTopic(ctx context.Context, name string, partitions int32, replicationFactor int16, config map[string]string) error {
-	// Convert config map[string]string to map[string]*string (Sarama format)
+func (a *AdminAdapter) CreateTopic(_ context.Context, name string, partitions int32, replicationFactor int16, config map[string]string) error {
+	// convert config map[string]string to map[string]*string (Sarama format)
 	saramaConfig := make(map[string]*string, len(config))
 	for k, v := range config {
 		val := v
@@ -45,20 +47,21 @@ func (a *AdminAdapter) CreateTopic(ctx context.Context, name string, partitions 
 
 	err := a.admin.CreateTopic(name, topicDetail, false)
 	if err != nil {
-		// Ignore "topic already exists" error (idempotent)
+		// ignore "topic already exists" error
 		if topicErr, ok := err.(*sarama.TopicError); ok {
 			if topicErr.Err == sarama.ErrTopicAlreadyExists {
 				return nil
 			}
 		}
-		return errors.WithStack(err)
+
+		return fmt.Errorf("failed to create topic %s: %w", name, err)
 	}
 
 	return nil
 }
 
 // DescribeTopics implements retry.Admin interface.
-func (a *AdminAdapter) DescribeTopics(ctx context.Context, topics []string) ([]resilience.TopicMetadata, error) {
+func (a *AdminAdapter) DescribeTopics(_ context.Context, topics []string) ([]resilience.TopicMetadata, error) {
 	metadata, err := a.admin.DescribeTopics(topics)
 	if err != nil {
 		return nil, errors.WithStack(err)

@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go/modules/kafka"
 	saramaadapter "github.com/vmyroslav/kafetrain/adapter/sarama"
-	"github.com/vmyroslav/kafetrain/retry"
+	"github.com/vmyroslav/kafetrain/resilience"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zaptest"
 )

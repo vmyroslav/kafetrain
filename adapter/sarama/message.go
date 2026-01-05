@@ -4,7 +4,7 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
-	"github.com/vmyroslav/kafetrain/retry"
+	"github.com/vmyroslav/kafetrain/resilience"
 )
 
 // Message wraps sarama.ConsumerMessage to implement retry.Message interface.
