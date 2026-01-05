@@ -31,18 +31,6 @@ func NewErrorTracker(
 	consumerFactory ConsumerFactory,
 	admin Admin,
 	comparator MessageChainTracker,
-) (*ErrorTracker, error) {
-	return NewErrorTrackerWithBackoff(cfg, logger, producer, consumerFactory, admin, comparator, nil)
-}
-
-// NewErrorTrackerWithBackoff creates a new ErrorTracker with custom backoff strategy.
-func NewErrorTrackerWithBackoff(
-	cfg *Config,
-	logger Logger,
-	producer Producer,
-	consumerFactory ConsumerFactory,
-	admin Admin,
-	comparator MessageChainTracker,
 	backoff BackoffStrategy,
 ) (*ErrorTracker, error) {
 	if comparator == nil {
