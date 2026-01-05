@@ -2,6 +2,7 @@ package resilience
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -72,7 +73,7 @@ func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
 // ensureTopicsExist creates retry, redirect, and DLQ topics if they don't exist.
 // Queries primary topic partition count and creates topics with matching partitions.
 func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) error {
-	// Query primary topic partition count
+	// query primary topic partition count
 	primaryPartitions := t.cfg.RetryTopicPartitions // fallback
 
 	metadata, err := t.admin.DescribeTopics(ctx, []string{topic})
@@ -91,31 +92,42 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 		)
 	}
 
+	g, ctx := errgroup.WithContext(ctx)
+
 	// Create retry topic
-	if err := t.admin.CreateTopic(ctx, t.retryTopic(topic), primaryPartitions, 1, map[string]string{
-		"cleanup.policy": "delete",
-		"retention.ms":   "3600000", // 1 hour
-	}); err != nil {
-		return errors.WithStack(err)
-	}
+	g.Go(func() error {
+		if err := t.admin.CreateTopic(ctx, t.retryTopic(topic), primaryPartitions, 1, map[string]string{
+			"cleanup.policy": "delete",
+			"retention.ms":   "3600000", // 1 hour
+		}); err != nil {
+			return fmt.Errorf("failed to create retry topic: %w", err)
+		}
+		return nil
+	})
 
 	// Create redirect topic
-	if err := t.admin.CreateTopic(ctx, t.redirectTopic(topic), primaryPartitions, 1, map[string]string{
-		"cleanup.policy": "compact",
-		"segment.ms":     "100",
-	}); err != nil {
-		return errors.WithStack(err)
-	}
+	g.Go(func() error {
+		if err := t.admin.CreateTopic(ctx, t.redirectTopic(topic), primaryPartitions, 1, map[string]string{
+			"cleanup.policy": "compact",
+			"segment.ms":     "100",
+		}); err != nil {
+			return fmt.Errorf("failed to create redirect topic: %w", err)
+		}
+		return nil
+	})
 
 	// Create DLQ topic
-	if err := t.admin.CreateTopic(ctx, t.dlqTopic(topic), primaryPartitions, 1, map[string]string{
-		"cleanup.policy": "delete",
-		"retention.ms":   "-1", // infinite
-	}); err != nil {
-		return errors.WithStack(err)
-	}
+	g.Go(func() error {
+		if err := t.admin.CreateTopic(ctx, t.dlqTopic(topic), primaryPartitions, 1, map[string]string{
+			"cleanup.policy": "delete",
+			"retention.ms":   "-1", // infinite
+		}); err != nil {
+			return fmt.Errorf("failed to create DLQ topic: %w", err)
+		}
+		return nil
+	})
 
-	return nil
+	return g.Wait()
 }
 
 func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
