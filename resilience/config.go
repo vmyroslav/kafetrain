@@ -2,32 +2,23 @@ package resilience
 
 // Config holds configuration for the retry mechanism.
 type Config struct {
-	// Topic naming
-	RedirectTopicPrefix string
-	DLQTopicPrefix      string
-	RetryTopicPrefix    string
-
-	// Kafka connection
-	Brokers []string
-	GroupID string
-	Version string
-
-	// Optional authentication
-	ClientID string
-	Username string
-	Password string
-	CACert   string
-
-	// Retry behavior
+	Password             string
+	CACert               string
+	RetryTopicPrefix     string
+	RedirectTopicPrefix  string
+	GroupID              string
+	Version              string
+	ClientID             string
+	Username             string
+	DLQTopicPrefix       string
+	Brokers              []string
 	MaxRetries           int
+	InitialOffset        int64
 	RetryTopicPartitions int32
+	BuffSize             uint16
+	MaxProcessingTime    uint16
 	FreeOnDLQ            bool
-
-	// Consumer settings
-	InitialOffset     int64
-	BuffSize          uint16
-	MaxProcessingTime uint16
-	Silent            bool
+	Silent               bool
 }
 
 // NewDefaultConfig creates a Config with sensible defaults.

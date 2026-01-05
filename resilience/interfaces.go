@@ -19,8 +19,8 @@ type Producer interface {
 // MessageTarget represents a message with its destination topic.
 // Used for batch operations where different messages go to different topics.
 type MessageTarget struct {
-	Topic   string
 	Message Message
+	Topic   string
 }
 
 // ConsumerHandler processes messages (library-agnostic).
@@ -39,7 +39,7 @@ func (f ConsumerHandlerFunc) Handle(ctx context.Context, msg Message) error {
 // Consumer consumes messages from Kafka topics (library-agnostic).
 type Consumer interface {
 	// Consume starts consuming from the specified topics
-	// Blocks until context is cancelled or an error occurs
+	// Blocks until context is canceled or an error occurs
 	Consume(ctx context.Context, topics []string, handler ConsumerHandler) error
 
 	// Close stops consumption and releases resources

@@ -222,6 +222,7 @@ func (t *ErrorTracker) Redirect(ctx context.Context, msg Message, lastError erro
 			"topic", msg.Topic(),
 			"offset", msg.Offset(),
 		)
+
 		return nil
 	}
 
@@ -297,12 +298,15 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 				"topic", originalTopic,
 				"error", err,
 			)
+
 			return err
 		}
+
 		t.logger.Debug("published to retry topic",
 			"retry_topic", t.retryTopic(originalTopic),
 			"next_attempt", nextAttempt,
 		)
+
 		return nil
 	})
 
@@ -312,8 +316,10 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 				"topic", originalTopic,
 				"error", err,
 			)
+
 			return err
 		}
+
 		return nil
 	})
 
@@ -578,6 +584,7 @@ func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, message *InternalMe
 		t.logger.Debug("delay complete, processing message",
 			"topic", message.topic,
 		)
+
 		return nil
 	case <-ctx.Done():
 		return errors.WithStack(ctx.Err())
@@ -587,13 +594,13 @@ func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, message *InternalMe
 // messageWrapper is an internal wrapper that implements the Message interface.
 // Used for producing messages via the library-agnostic Producer interface.
 type messageWrapper struct {
+	timestamp time.Time
+	headers   Headers
 	topic     string
-	partition int32
-	offset    int64
 	key       []byte
 	value     []byte
-	headers   Headers
-	timestamp time.Time
+	offset    int64
+	partition int32
 }
 
 func (m *messageWrapper) Topic() string        { return m.topic }
@@ -615,6 +622,7 @@ func (h *headerListWrapper) Get(key string) ([]byte, bool) {
 			return header.Value, true
 		}
 	}
+
 	return nil, false
 }
 
@@ -638,6 +646,7 @@ func (h *headerListWrapper) All() map[string][]byte {
 	for _, header := range h.headers {
 		result[string(header.Key)] = header.Value
 	}
+
 	return result
 }
 
@@ -660,6 +669,7 @@ func (h *headerListWrapper) Clone() Headers {
 			Value: append([]byte(nil), header.Value...),
 		}
 	}
+
 	return &headerListWrapper{headers: cloned}
 }
 
@@ -716,6 +726,7 @@ func (r *RedirectHandler) Handle(ctx context.Context, msg Message) error {
 	}
 
 	internalMsg := r.t.toInternalMessage(msg)
+
 	err := r.t.ReleaseMessage(ctx, internalMsg)
 	if err != nil {
 		return errors.WithStack(err)

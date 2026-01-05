@@ -286,6 +286,7 @@ func (t *ErrorTracker) Redirect(ctx context.Context, msg *sarama.ConsumerMessage
 			zap.String("topic", msg.Topic),
 			zap.Int64("offset", msg.Offset),
 		)
+
 		return nil
 	}
 
@@ -370,12 +371,15 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Messag
 				zap.String("topic", originalTopic),
 				zap.Error(err),
 			)
+
 			return err
 		}
+
 		t.logger.Debug("published to retry topic",
 			zap.String("retry_topic", t.retryTopic(originalTopic)),
 			zap.Int("next_attempt", nextAttempt),
 		)
+
 		return nil
 	})
 
@@ -385,8 +389,10 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Messag
 				zap.String("topic", originalTopic),
 				zap.Error(err),
 			)
+
 			return err
 		}
+
 		return nil
 	})
 

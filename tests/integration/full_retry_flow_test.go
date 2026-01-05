@@ -39,7 +39,7 @@ func TestIntegration_FullRetryFlow(t *testing.T) {
 	// Create handler that fails once, then succeeds
 	var attemptCount atomic.Int32
 	var processedOnce sync.Once
-	var processedCh = make(chan struct{})
+	processedCh := make(chan struct{})
 
 	handler := retryold.MessageHandleFunc(func(_ context.Context, msg *retryold.Message) error {
 		attempt := attemptCount.Add(1)

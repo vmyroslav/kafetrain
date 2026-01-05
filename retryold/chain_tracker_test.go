@@ -223,7 +223,7 @@ func TestLockMap_RemoveKey(t *testing.T) {
 
 	// remove from empty map (should not panic)
 	lm.removeKey("topic", "key")
-	assert.Len(t, lm, 0, "map should still be empty")
+	assert.Empty(t, lm, "map should still be empty")
 
 	// setup
 	lm["topic"] = map[string]int{"key1": 1, "key2": 2}
@@ -249,7 +249,7 @@ func TestLockMap_RemoveTopic(t *testing.T) {
 
 	// remove from empty map (should not panic)
 	lm.removeTopic("topic")
-	assert.Len(t, lm, 0, "map should still be empty")
+	assert.Empty(t, lm, "map should still be empty")
 
 	// setup
 	lm["topic1"] = map[string]int{"key": 1}

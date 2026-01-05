@@ -23,6 +23,7 @@ func GetRetryAttempt(msg *sarama.ConsumerMessage) int {
 			if err != nil {
 				return 0
 			}
+
 			return val
 		}
 	}
@@ -38,6 +39,7 @@ func IsRetryMessage(msg *sarama.ConsumerMessage) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -49,6 +51,7 @@ func GetOriginalTopic(msg *sarama.ConsumerMessage) string {
 			return string(h.Value)
 		}
 	}
+
 	return ""
 }
 
@@ -61,9 +64,11 @@ func GetMaxRetries(msg *sarama.ConsumerMessage) int {
 			if err != nil {
 				return 0
 			}
+
 			return val
 		}
 	}
+
 	return 0
 }
 
@@ -75,6 +80,7 @@ func GetRetryReason(msg *sarama.ConsumerMessage) string {
 			return string(h.Value)
 		}
 	}
+
 	return ""
 }
 

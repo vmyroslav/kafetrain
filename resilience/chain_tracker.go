@@ -27,6 +27,7 @@ func (kt *KeyTracker) IsRelated(_ context.Context, msg *InternalMessage) bool {
 
 	// if key for this topic has a reference count > 0, then message is related.
 	count, exists := kt.lm.getRefCount(msg.topic, string(msg.Key))
+
 	return exists && count > 0
 }
 
@@ -75,6 +76,7 @@ func (lm lockMap) getRefCount(topic, key string) (int, bool) {
 	if lm[topic] == nil {
 		return 0, false
 	}
+
 	count, ok := lm[topic][key]
 
 	return count, ok
@@ -86,6 +88,7 @@ func (lm lockMap) incrementRef(topic, key string) int {
 	if lm[topic] == nil {
 		lm[topic] = make(map[string]int)
 	}
+
 	lm[topic][key]++
 
 	return lm[topic][key]
@@ -97,6 +100,7 @@ func (lm lockMap) decrementRef(topic, key string) int {
 	if lm[topic] == nil {
 		return -1
 	}
+
 	lm[topic][key]--
 
 	return lm[topic][key]
@@ -108,6 +112,7 @@ func (lm lockMap) removeKey(topic, key string) {
 	if lm[topic] == nil {
 		return
 	}
+
 	delete(lm[topic], key)
 }
 
@@ -126,6 +131,7 @@ func (lm lockMap) hasKey(topic, key string) bool {
 	if lm[topic] == nil {
 		return false
 	}
+
 	_, ok := lm[topic][key]
 
 	return ok

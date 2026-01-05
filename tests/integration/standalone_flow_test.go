@@ -279,7 +279,6 @@ func (h *standaloneTestHandler) ConsumeClaim(
 
 		// Process message using the SAME processor as retry consumer
 		err := h.processor.process(session.Context(), msg)
-
 		if err != nil {
 			// Check if retriable (using helper)
 			if retryold.IsRetriable(err) {

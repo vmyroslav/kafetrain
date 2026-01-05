@@ -36,7 +36,7 @@ func TestIntegration_FIFOOrdering(t *testing.T) {
 	var queuedMessages []string
 	var mu sync.Mutex
 	var processedCount atomic.Int32
-	var allProcessedCh = make(chan struct{})
+	allProcessedCh := make(chan struct{})
 	var closeOnce sync.Once
 
 	handler := retryold.MessageHandleFunc(func(_ context.Context, msg *retryold.Message) error {
