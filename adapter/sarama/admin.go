@@ -31,7 +31,13 @@ func NewAdminAdapterFromClient(client sarama.Client) (resilience.Admin, error) {
 }
 
 // CreateTopic implements retry.Admin interface.
-func (a *AdminAdapter) CreateTopic(_ context.Context, name string, partitions int32, replicationFactor int16, config map[string]string) error {
+func (a *AdminAdapter) CreateTopic(
+	_ context.Context,
+	name string,
+	partitions int32,
+	replicationFactor int16,
+	config map[string]string,
+) error {
 	// convert config map[string]string to map[string]*string (Sarama format)
 	saramaConfig := make(map[string]*string, len(config))
 	for k, v := range config {

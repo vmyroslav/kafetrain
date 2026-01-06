@@ -73,30 +73,31 @@ func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
 // ensureTopicsExist creates retry, redirect, and DLQ topics if they don't exist.
 // Queries primary topic partition count and creates topics with matching partitions.
 func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) error {
-	// query primary topic partition count
-	primaryPartitions := t.cfg.RetryTopicPartitions // fallback
+	// Determine partition count
+	partitions := t.cfg.RetryTopicPartitions
 
-	metadata, err := t.admin.DescribeTopics(ctx, []string{topic})
-	if err == nil && len(metadata) > 0 {
-		primaryPartitions = metadata[0].Partitions()
+	// If config is 0 (auto), query primary topic
+	if partitions == 0 {
+		metadata, err := t.admin.DescribeTopics(ctx, []string{topic})
+		if err != nil {
+			return fmt.Errorf("failed to describe primary topic '%s' for partition count auto-detection: %w", topic, err)
+		}
+		if len(metadata) == 0 {
+			return fmt.Errorf("no metadata found for primary topic '%s' during partition count auto-detection", topic)
+		}
 
-		t.logger.Debug("using primary topic partition count for retry topics",
+		partitions = metadata[0].Partitions()
+		t.logger.Debug("using primary topic partition count",
 			"topic", topic,
-			"partitions", primaryPartitions,
-		)
-	} else {
-		t.logger.Warn("could not query primary topic, using config value",
-			"topic", topic,
-			"partitions", primaryPartitions,
-			"error", err,
+			"partitions", partitions,
 		)
 	}
 
 	g, ctx := errgroup.WithContext(ctx)
 
-	// Create retry topic
+	// create retry topic
 	g.Go(func() error {
-		if err := t.admin.CreateTopic(ctx, t.retryTopic(topic), primaryPartitions, 1, map[string]string{
+		if err := t.admin.CreateTopic(ctx, t.retryTopic(topic), partitions, 1, map[string]string{
 			"cleanup.policy": "delete",
 			"retention.ms":   "3600000", // 1 hour
 		}); err != nil {
@@ -105,9 +106,9 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 		return nil
 	})
 
-	// Create redirect topic
+	// create redirect topic
 	g.Go(func() error {
-		if err := t.admin.CreateTopic(ctx, t.redirectTopic(topic), primaryPartitions, 1, map[string]string{
+		if err := t.admin.CreateTopic(ctx, t.redirectTopic(topic), partitions, 1, map[string]string{
 			"cleanup.policy": "compact",
 			"segment.ms":     "100",
 		}); err != nil {
@@ -116,9 +117,9 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 		return nil
 	})
 
-	// Create DLQ topic
+	// create DLQ topic
 	g.Go(func() error {
-		if err := t.admin.CreateTopic(ctx, t.dlqTopic(topic), primaryPartitions, 1, map[string]string{
+		if err := t.admin.CreateTopic(ctx, t.dlqTopic(topic), partitions, 1, map[string]string{
 			"cleanup.policy": "delete",
 			"retention.ms":   "-1", // infinite
 		}); err != nil {
@@ -134,7 +135,7 @@ func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
 	refillCfg := *t.cfg
 	refillCfg.GroupID = uuid.New().String()
 
-	// Create temporary consumer for state restoration
+	// create temporary consumer for state restoration
 	refillConsumer, err := t.consumerFactory.NewConsumer(refillCfg.GroupID)
 	if err != nil {
 		return errors.WithStack(err)

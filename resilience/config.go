@@ -29,7 +29,7 @@ func NewDefaultConfig() *Config {
 		RetryTopicPrefix:     "retry",
 		ClientID:             "kafetrain-consumer",
 		MaxRetries:           5,
-		RetryTopicPartitions: 1,
+		RetryTopicPartitions: 0,
 		InitialOffset:        -2, // OffsetOldest
 		BuffSize:             256,
 		MaxProcessingTime:    100,
