@@ -3,6 +3,7 @@ package resilience
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -131,6 +132,18 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 	return g.Wait()
 }
 
+// restoreState populates the internal MessageChainTracker with existing state from the redirect topic.
+// It performs a "catch-up" read of the redirect topic to ensure the ErrorTracker knows which
+// messages are already in the retry chain before starting live processing.
+//
+// The restoration process works as follows:
+//  1. Creates an ephemeral consumer group with a unique UUID to read the redirect topic from the beginning.
+//  2. Uses an idle timeout (StateRestoreIdleTimeoutMs) to detect when it has reached the end of the
+//     compacted topic backlog. If no messages are received for this duration, it assumes restoration is complete.
+//  3. Uses a total timeout (StateRestoreTimeoutMs) as a safety bound to ensure startup isn't blocked
+//     indefinitely if the redirect topic has extremely high continuous traffic.
+//  4. Once restoration finishes or times out, it explicitly deletes the ephemeral consumer group
+//     from the Kafka cluster to prevent resource leakage.
 func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
 	refillCfg := *t.cfg
 	refillCfg.GroupID = uuid.New().String()
@@ -141,13 +154,56 @@ func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
 		return errors.WithStack(err)
 	}
 
-	refillCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	timeout := time.Duration(t.cfg.StateRestoreTimeoutMs) * time.Millisecond
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+
+	refillCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+
+	// Idle timeout (default 5s)
+	idleTimeout := time.Duration(t.cfg.StateRestoreIdleTimeoutMs) * time.Millisecond
+	if idleTimeout == 0 {
+		idleTimeout = 5 * time.Second
+	}
+
+	// Track last activity
+	lastActivity := time.Now().UnixNano()
+	handler := &redirectFillHandler{
+		t:            t,
+		lastActivity: &lastActivity,
+	}
+
+	// Monitor for idleness
+	go func() {
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-refillCtx.Done():
+				return
+			case <-ticker.C:
+				last := atomic.LoadInt64(&lastActivity)
+				elapsed := time.Since(time.Unix(0, last))
+
+				if elapsed > idleTimeout {
+					t.logger.Debug("state restoration idle timeout reached, stopping consumer",
+						"idle_duration", elapsed,
+						"timeout", idleTimeout,
+					)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
 
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- refillConsumer.Consume(refillCtx, []string{t.redirectTopic(topic)}, &redirectFillHandler{t: t})
+		errCh <- refillConsumer.Consume(refillCtx, []string{t.redirectTopic(topic)}, handler)
 	}()
 
 	<-refillCtx.Done()
@@ -677,10 +733,14 @@ func (h *headerListWrapper) Clone() Headers {
 // Handler types for internal consumers
 
 type redirectFillHandler struct {
-	t *ErrorTracker
+	t            *ErrorTracker
+	lastActivity *int64
 }
 
 func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
+	// Update last activity
+	atomic.StoreInt64(r.lastActivity, time.Now().UnixNano())
+
 	// Skip tombstone events
 	if msg.Value() == nil {
 		return nil
