@@ -138,6 +138,8 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 //
 // The restoration process works as follows:
 //  1. Creates an ephemeral consumer group with a unique UUID to read the redirect topic from the beginning.
+//     NOTE: The underlying ConsumerFactory must be configured to start reading from the earliest offset
+//     (e.g., auto.offset.reset=earliest) for new consumer groups, otherwise existing state will be skipped.
 //  2. Uses an idle timeout (StateRestoreIdleTimeoutMs) to detect when it has reached the end of the
 //     compacted topic backlog. If no messages are received for this duration, it assumes restoration is complete.
 //  3. Uses a total timeout (StateRestoreTimeoutMs) as a safety bound to ensure startup isn't blocked
@@ -453,14 +455,16 @@ func (t *ErrorTracker) publishToRedirect(ctx context.Context, msg *InternalMessa
 
 // freeMessage is the internal InternalMessage-based free implementation.
 func (t *ErrorTracker) freeMessage(ctx context.Context, msg *InternalMessage) error {
-	id, ok := GetHeaderValue[string](&msg.Headers, headerRetry)
+	id, ok := GetHeaderValue[string](&msg.Headers, headerID)
 	if !ok {
-		return errors.New("topic id not found")
+		// fallback to key if ID header is missing (e.g. freeing original message)
+		id = string(msg.Key)
 	}
 
 	topic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
 	if !ok {
-		return errors.New("topic header not found")
+		// fallback to message topic if header is missing
+		topic = msg.topic
 	}
 
 	headers := HeaderList{
@@ -483,6 +487,33 @@ func (t *ErrorTracker) freeMessage(ctx context.Context, msg *InternalMessage) er
 	}
 
 	return t.producer.Produce(ctx, tombstoneMsg.Topic(), tombstoneMsg)
+}
+
+func (t *ErrorTracker) processRedirectMessage(ctx context.Context, msg Message) error {
+	if msg.Value() == nil {
+		return t.ReleaseMessage(ctx, t.toInternalMessage(msg))
+	}
+
+	// Extract original topic and key from headers
+	originalTopicBytes, ok := msg.Headers().Get(HeaderTopic)
+	if !ok {
+		return errors.New("redirect message missing topic header")
+	}
+
+	originalKeyBytes, ok := msg.Headers().Get(headerKey)
+	if !ok {
+		return errors.New("redirect message missing key header")
+	}
+
+	// Reconstruct original message to restore to comparator
+	originalMsg := &InternalMessage{
+		topic: string(originalTopicBytes),
+		Key:   originalKeyBytes,
+	}
+
+	// Restore to comparator's tracking state
+	_, err := t.comparator.AddMessage(ctx, originalMsg)
+	return errors.WithStack(err)
 }
 
 func (t *ErrorTracker) ReleaseMessage(ctx context.Context, msg *InternalMessage) error {
@@ -741,35 +772,7 @@ func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
 	// Update last activity
 	atomic.StoreInt64(r.lastActivity, time.Now().UnixNano())
 
-	// Skip tombstone events
-	if msg.Value() == nil {
-		return nil
-	}
-
-	// Extract original topic and key from headers
-	originalTopicBytes, ok := msg.Headers().Get(HeaderTopic)
-	if !ok {
-		return errors.New("redirect message missing topic header")
-	}
-
-	originalKeyBytes, ok := msg.Headers().Get(headerKey)
-	if !ok {
-		return errors.New("redirect message missing key header")
-	}
-
-	// Reconstruct original message to restore to comparator
-	originalMsg := &InternalMessage{
-		topic: string(originalTopicBytes),
-		Key:   originalKeyBytes,
-	}
-
-	// Restore to comparator's tracking state
-	_, err := r.t.comparator.AddMessage(ctx, originalMsg)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	return nil
+	return r.t.processRedirectMessage(ctx, msg)
 }
 
 type RedirectHandler struct {
@@ -781,19 +784,7 @@ func NewRedirectHandler(t *ErrorTracker) *RedirectHandler {
 }
 
 func (r *RedirectHandler) Handle(ctx context.Context, msg Message) error {
-	// Only process tombstones
-	if msg.Value() != nil {
-		return nil
-	}
-
-	internalMsg := r.t.toInternalMessage(msg)
-
-	err := r.t.ReleaseMessage(ctx, internalMsg)
-	if err != nil {
-		return errors.WithStack(err)
-	}
-
-	return nil
+	return r.t.processRedirectMessage(ctx, msg)
 }
 
 // RetriableError wraps an error to indicate if it should be retried.

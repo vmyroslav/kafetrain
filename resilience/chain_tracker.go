@@ -6,9 +6,14 @@ import (
 )
 
 type MessageChainTracker interface {
-	IsRelated(ctx context.Context, msg *InternalMessage) bool             // IsRelated returns true if message is related to error chain
-	AddMessage(ctx context.Context, msg *InternalMessage) (string, error) // AddMessage adds message to error chain
-	ReleaseMessage(ctx context.Context, msg *InternalMessage) error       // ReleaseMessage removes message from error chain
+	// IsRelated returns true if message is related to error chain
+	IsRelated(ctx context.Context, msg *InternalMessage) bool
+
+	// AddMessage adds message to error chain
+	AddMessage(ctx context.Context, msg *InternalMessage) (string, error)
+
+	// ReleaseMessage removes message from error chain
+	ReleaseMessage(ctx context.Context, msg *InternalMessage) error
 }
 
 type KeyTracker struct {
@@ -25,7 +30,7 @@ func (kt *KeyTracker) IsRelated(_ context.Context, msg *InternalMessage) bool {
 	kt.mu.RLock()
 	defer kt.mu.RUnlock()
 
-	// if key for this topic has a reference count > 0, then message is related.
+	// if key for this topic has a reference count > 0, then message is related
 	count, exists := kt.lm.getRefCount(msg.topic, string(msg.Key))
 
 	return exists && count > 0
