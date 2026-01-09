@@ -67,7 +67,11 @@ type YourHandler struct {
 func (h *YourHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
     for msg := range claim.Messages() {
         if h.tracker.IsInRetryChain(msg) {
-            continue  // Skip messages being retried
+            // Side-line: Immediately redirect to retry topic to maintain order without blocking partition
+            // We pass nil as error since this is just a re-routing, not a processing failure
+            h.tracker.Redirect(ctx, msg, nil)
+            session.MarkMessage(msg, "")
+            continue
         }
 
         if err := processMessage(msg); err != nil {

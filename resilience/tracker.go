@@ -328,15 +328,10 @@ func (t *ErrorTracker) IsInRetryChain(msg Message) bool {
 func (t *ErrorTracker) Redirect(ctx context.Context, msg Message, lastError error) error {
 	internalMsg := t.toInternalMessage(msg)
 
-	// Check if already in retry chain
-	if t.comparator.IsRelated(ctx, internalMsg) {
-		t.logger.Debug("message already in retry chain, skipping redirect",
-			"topic", msg.Topic(),
-			"offset", msg.Offset(),
-		)
-
-		return nil
-	}
+	// We used to check t.comparator.IsRelated here and skip redirect if true.
+	// However, that caused data loss because the message was marked as "handled" but not persisted anywhere.
+	// We MUST persist the message to the retry topic to maintain the queue/order.
+	// The redirect topic (lock) update is idempotent.
 
 	return t.redirectMessageWithError(ctx, internalMsg, lastError)
 }
@@ -416,8 +411,17 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 			"error", err,
 		)
 
-		// Rollback: try to unlock the key since we failed to send the retry message
-		if rollbackErr := t.freeMessage(ctx, msg); rollbackErr != nil {
+		// Rollback: try to unlock the key since we failed to send the retry message.
+		// We retry this critical operation to avoid leaving a "Zombie Key" (locked forever).
+		var rollbackErr error
+		for i := 0; i < 3; i++ {
+			if rollbackErr = t.freeMessage(ctx, msg); rollbackErr == nil {
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+
+		if rollbackErr != nil {
 			t.logger.Error("CRITICAL: failed to rollback redirect lock after retry publish failure. Key may be permanently locked!",
 				"topic", originalTopic,
 				"key", key,
