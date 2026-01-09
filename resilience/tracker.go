@@ -3,6 +3,7 @@ package resilience
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -77,7 +78,7 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 	// Determine partition count
 	partitions := t.cfg.RetryTopicPartitions
 
-	// If config is 0 (auto), query primary topic
+	// if config is 0 (default), query primary topic
 	if partitions == 0 {
 		metadata, err := t.admin.DescribeTopics(ctx, []string{topic})
 		if err != nil {
@@ -164,21 +165,35 @@ func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
 	refillCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Idle timeout (default 5s)
+	// idle timeout
 	idleTimeout := time.Duration(t.cfg.StateRestoreIdleTimeoutMs) * time.Millisecond
 	if idleTimeout == 0 {
 		idleTimeout = 5 * time.Second
 	}
 
-	// Track last activity
-	lastActivity := time.Now().UnixNano()
+	// Track last activity using heap-allocated atomic to avoid stack pointer issues
+	lastActivity := new(int64)
+	atomic.StoreInt64(lastActivity, time.Now().UnixNano())
+
+	// Track messages restored for logging
+	messagesRestored := new(int64)
+
 	handler := &redirectFillHandler{
-		t:            t,
-		lastActivity: &lastActivity,
+		t:                t,
+		lastActivity:     lastActivity,
+		messagesRestored: messagesRestored,
 	}
 
-	// Monitor for idleness
+	// Monitor for idleness. Use a dedicated context for the goroutine to ensure cleanup.
+	monitorCtx, monitorCancel := context.WithCancel(context.Background())
+	defer monitorCancel()
+
+	// Use WaitGroup to ensure goroutine is fully terminated before function returns
+	var wg sync.WaitGroup
+	wg.Add(1)
+
 	go func() {
+		defer wg.Done()
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 
@@ -186,14 +201,17 @@ func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
 			select {
 			case <-refillCtx.Done():
 				return
+			case <-monitorCtx.Done():
+				return
 			case <-ticker.C:
-				last := atomic.LoadInt64(&lastActivity)
+				last := atomic.LoadInt64(lastActivity)
 				elapsed := time.Since(time.Unix(0, last))
 
 				if elapsed > idleTimeout {
 					t.logger.Debug("state restoration idle timeout reached, stopping consumer",
 						"idle_duration", elapsed,
 						"timeout", idleTimeout,
+						"messages_restored", atomic.LoadInt64(messagesRestored),
 					)
 					cancel()
 					return
@@ -210,17 +228,52 @@ func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
 
 	<-refillCtx.Done()
 
+	// Wait for monitor goroutine to cleanup
+	monitorCancel()
+	wg.Wait()
+
 	if err := refillConsumer.Close(); err != nil {
-		return errors.WithStack(err)
+		return errors.Wrapf(err, "failed to close refill consumer during state restoration (topic=%s, group=%s)", topic, refillCfg.GroupID)
 	}
 
-	// Delete ephemeral consumer group (critical: prevents orphaning)
-	if err := t.admin.DeleteConsumerGroup(ctx, refillCfg.GroupID); err != nil {
-		t.logger.Warn("failed to delete ephemeral consumer group",
+	// Delete ephemeral consumer group with retry to prevent pollution.
+	// We use a linear backoff to give Kafka time to release resources between attempts.
+	maxRetries := 5
+	var deleteErr error
+
+	for i := 0; i < maxRetries; i++ {
+		deleteErr = t.admin.DeleteConsumerGroup(ctx, refillCfg.GroupID)
+		if deleteErr == nil {
+			t.logger.Debug("successfully deleted ephemeral consumer group",
+				"group_id", refillCfg.GroupID,
+			)
+			break
+		}
+
+		t.logger.Warn("failed to delete ephemeral consumer group, retrying",
 			"group_id", refillCfg.GroupID,
-			"error", err,
+			"error", deleteErr,
+			"attempt", i+1,
+			"max_retries", maxRetries,
 		)
-		// Non-fatal: group will be cleaned up by Kafka eventually
+
+		if i < maxRetries-1 {
+			select {
+			case <-ctx.Done():
+				return errors.WithStack(ctx.Err())
+			case <-time.After(time.Duration(i+1) * time.Second):
+			}
+		}
+	}
+
+	if deleteErr != nil {
+		// Log as Error because this leaves garbage in the cluster that requires manual cleanup.
+		t.logger.Error("CRITICAL: failed to delete ephemeral consumer group after all retries",
+			"group_id", refillCfg.GroupID,
+			"error", deleteErr,
+			"impact", "consumer group pollution",
+		)
+		// We do not return the error here to allow the application to start up despite the leak.
 	}
 
 	return nil
@@ -350,39 +403,33 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 		"next_retry_time", nextRetryTime,
 	)
 
-	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		if err := t.publishToRetry(ctx, msg, key, nextAttempt, nextRetryTime, originalTime, lastError, originalTopic); err != nil {
-			t.logger.Error("failed to publish to retry topic",
-				"topic", originalTopic,
-				"error", err,
-			)
+	// Sequential publish with compensating rollback to ensure atomicity.
+	// We publish to redirect topic (lock) first, then to retry topic.
+	if err := t.publishToRedirect(ctx, msg, key, originalTopic); err != nil {
+		return errors.Wrapf(err, "failed to publish lock to redirect topic (topic=%s, key=%s)", originalTopic, key)
+	}
 
-			return err
-		}
-
-		t.logger.Debug("published to retry topic",
-			"retry_topic", t.retryTopic(originalTopic),
-			"next_attempt", nextAttempt,
+	if err := t.publishToRetry(ctx, msg, key, nextAttempt, nextRetryTime, originalTime, lastError, originalTopic); err != nil {
+		t.logger.Error("failed to publish to retry topic, attempting rollback of redirect lock",
+			"topic", originalTopic,
+			"key", key,
+			"error", err,
 		)
 
-		return nil
-	})
-
-	g.Go(func() error {
-		if err := t.publishToRedirect(ctx, msg, key, originalTopic); err != nil {
-			t.logger.Error("failed to publish to redirect topic",
+		// Rollback: try to unlock the key since we failed to send the retry message
+		if rollbackErr := t.freeMessage(ctx, msg); rollbackErr != nil {
+			t.logger.Error("CRITICAL: failed to rollback redirect lock after retry publish failure. Key may be permanently locked!",
 				"topic", originalTopic,
-				"error", err,
+				"key", key,
+				"original_error", err,
+				"rollback_error", rollbackErr,
 			)
-
-			return err
 		}
 
-		return nil
-	})
+		return errors.Wrapf(err, "failed to publish to retry topic (topic=%s, key=%s)", originalTopic, key)
+	}
 
-	return errors.WithStack(g.Wait())
+	return nil
 }
 
 func (t *ErrorTracker) publishToRetry(
@@ -739,13 +786,13 @@ func (h *headerListWrapper) All() map[string][]byte {
 }
 
 func (h *headerListWrapper) Delete(key string) {
-	for i, header := range h.headers {
-		if string(header.Key) == key {
-			// Remove the header by slicing
-			h.headers = append(h.headers[:i], h.headers[i+1:]...)
-			return
+	newHeaders := make(HeaderList, 0, len(h.headers))
+	for _, header := range h.headers {
+		if string(header.Key) != key {
+			newHeaders = append(newHeaders, header)
 		}
 	}
+	h.headers = newHeaders
 }
 
 func (h *headerListWrapper) Clone() Headers {
@@ -764,13 +811,15 @@ func (h *headerListWrapper) Clone() Headers {
 // Handler types for internal consumers
 
 type redirectFillHandler struct {
-	t            *ErrorTracker
-	lastActivity *int64
+	t                *ErrorTracker
+	lastActivity     *int64
+	messagesRestored *int64
 }
 
 func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
 	// Update last activity
 	atomic.StoreInt64(r.lastActivity, time.Now().UnixNano())
+	atomic.AddInt64(r.messagesRestored, 1)
 
 	return r.t.processRedirectMessage(ctx, msg)
 }
