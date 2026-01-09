@@ -2,13 +2,13 @@ package resilience
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/pkg/errors"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -154,7 +154,7 @@ func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
 	// create temporary consumer for state restoration
 	refillConsumer, err := t.consumerFactory.NewConsumer(refillCfg.GroupID)
 	if err != nil {
-		return errors.WithStack(err)
+		return err
 	}
 
 	timeout := time.Duration(t.cfg.StateRestoreTimeoutMs) * time.Millisecond
@@ -233,7 +233,7 @@ func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
 	wg.Wait()
 
 	if err := refillConsumer.Close(); err != nil {
-		return errors.Wrapf(err, "failed to close refill consumer during state restoration (topic=%s, group=%s)", topic, refillCfg.GroupID)
+		return fmt.Errorf("failed to close refill consumer during state restoration (topic=%s, group=%s): %w", topic, refillCfg.GroupID, err)
 	}
 
 	// Delete ephemeral consumer group with retry to prevent pollution.
@@ -260,7 +260,7 @@ func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
 		if i < maxRetries-1 {
 			select {
 			case <-ctx.Done():
-				return errors.WithStack(ctx.Err())
+				return ctx.Err()
 			case <-time.After(time.Duration(i+1) * time.Second):
 			}
 		}
@@ -287,7 +287,7 @@ func (t *ErrorTracker) startRedirectConsumer(ctx context.Context, topic string) 
 
 	redirectConsumer, err := t.consumerFactory.NewConsumer(redirectCfg.GroupID)
 	if err != nil {
-		return errors.WithStack(err)
+		return err
 	}
 
 	go func() {
@@ -401,7 +401,7 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 	// Sequential publish with compensating rollback to ensure atomicity.
 	// We publish to redirect topic (lock) first, then to retry topic.
 	if err := t.publishToRedirect(ctx, msg, key, originalTopic); err != nil {
-		return errors.Wrapf(err, "failed to publish lock to redirect topic (topic=%s, key=%s)", originalTopic, key)
+		return fmt.Errorf("failed to publish lock to redirect topic (topic=%s, key=%s): %w", originalTopic, key, err)
 	}
 
 	if err := t.publishToRetry(ctx, msg, key, nextAttempt, nextRetryTime, originalTime, lastError, originalTopic); err != nil {
@@ -430,7 +430,7 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 			)
 		}
 
-		return errors.Wrapf(err, "failed to publish to retry topic (topic=%s, key=%s)", originalTopic, key)
+		return fmt.Errorf("failed to publish to retry topic (topic=%s, key=%s): %w", originalTopic, key, err)
 	}
 
 	return nil
@@ -564,7 +564,7 @@ func (t *ErrorTracker) processRedirectMessage(ctx context.Context, msg Message) 
 
 	// Restore to comparator's tracking state
 	_, err := t.comparator.AddMessage(ctx, originalMsg)
-	return errors.WithStack(err)
+	return err
 }
 
 func (t *ErrorTracker) ReleaseMessage(ctx context.Context, msg *InternalMessage) error {
@@ -582,7 +582,7 @@ func (t *ErrorTracker) ReleaseMessage(ctx context.Context, msg *InternalMessage)
 		Key:   []byte(key),
 		topic: topic,
 	}); err != nil {
-		return errors.WithStack(err)
+		return err
 	}
 
 	return nil
@@ -673,7 +673,7 @@ func (t *ErrorTracker) HandleMaxRetriesExceeded(ctx context.Context, message *In
 			"error", err,
 		)
 
-		return errors.Wrap(err, "failed to send message to DLQ")
+		return fmt.Errorf("failed to send message to DLQ: %w", err)
 	}
 
 	// conditionally free from tracking based on config
@@ -684,7 +684,7 @@ func (t *ErrorTracker) HandleMaxRetriesExceeded(ctx context.Context, message *In
 				"error", err,
 			)
 
-			return errors.Wrap(err, "failed to free message after DLQ")
+			return fmt.Errorf("failed to free message after DLQ: %w", err)
 		}
 
 		t.logger.Debug("successfully sent to DLQ and freed from tracking",
@@ -726,7 +726,7 @@ func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, message *InternalMe
 
 		return nil
 	case <-ctx.Done():
-		return errors.WithStack(ctx.Err())
+		return ctx.Err()
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/IBM/sarama"
-	"github.com/pkg/errors"
 	"github.com/vmyroslav/kafetrain/resilience"
 )
 
@@ -24,7 +23,7 @@ func NewAdminAdapter(admin sarama.ClusterAdmin) resilience.Admin {
 func NewAdminAdapterFromClient(client sarama.Client) (resilience.Admin, error) {
 	admin, err := sarama.NewClusterAdminFromClient(client)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 
 	return NewAdminAdapter(admin), nil
@@ -70,7 +69,7 @@ func (a *AdminAdapter) CreateTopic(
 func (a *AdminAdapter) DescribeTopics(_ context.Context, topics []string) ([]resilience.TopicMetadata, error) {
 	metadata, err := a.admin.DescribeTopics(topics)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 
 	result := make([]resilience.TopicMetadata, 0, len(metadata))
@@ -99,7 +98,7 @@ func (a *AdminAdapter) DescribeTopics(_ context.Context, topics []string) ([]res
 func (a *AdminAdapter) DeleteConsumerGroup(ctx context.Context, groupID string) error {
 	err := a.admin.DeleteConsumerGroup(groupID)
 	if err != nil {
-		return errors.WithStack(err)
+		return err
 	}
 	return nil
 }

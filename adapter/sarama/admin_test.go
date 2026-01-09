@@ -2,10 +2,10 @@ package sarama
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/IBM/sarama"
-	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -71,7 +71,7 @@ func TestAdminAdapter_CreateTopic(t *testing.T) {
 		err := adapter.CreateTopic(context.Background(), "test-topic", 1, 1, nil)
 
 		assert.Error(t, err)
-		assert.True(t, errors.Is(err, expectedErr) || err.Error() == expectedErr.Error() || errors.As(err, &expectedErr))
+		assert.True(t, errors.Is(err, expectedErr) || err.Error() == expectedErr.Error())
 		m.AssertExpectations(t)
 	})
 }
