@@ -56,7 +56,13 @@ func (kt *KeyTracker) ReleaseMessage(_ context.Context, msg *InternalMessage) er
 	defer kt.mu.Unlock()
 
 	// decrement reference count
-	newCount := kt.lm.decrementRef(topic, key)
+	newCount, exists := kt.lm.decrementRef(topic, key)
+
+	if !exists {
+		// key wasn't tracked, this is idempotent, but
+		// implies Free() was called on a message not in the chain.
+		return nil
+	}
 
 	// remove key when count reaches 0
 	if newCount <= 0 {
@@ -100,15 +106,19 @@ func (lm lockMap) incrementRef(topic, key string) int {
 }
 
 // decrementRef decrements the reference count for a topic/key pair.
-// Returns the new reference count (can be negative if key doesn't exist).
-func (lm lockMap) decrementRef(topic, key string) int {
+// Returns the new reference count and whether the key existed.
+func (lm lockMap) decrementRef(topic, key string) (int, bool) {
 	if lm[topic] == nil {
-		return -1
+		return 0, false
+	}
+
+	if _, ok := lm[topic][key]; !ok {
+		return 0, false
 	}
 
 	lm[topic][key]--
 
-	return lm[topic][key]
+	return lm[topic][key], true
 }
 
 // removeKey removes a key from a topic.

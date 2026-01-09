@@ -188,32 +188,40 @@ func TestLockMap_DecrementRef(t *testing.T) {
 	lm := make(lockMap)
 
 	// decrement on empty map
-	count := lm.decrementRef("topic", "key")
-	assert.Equal(t, -1, count, "decrement on empty map should return -1")
+	count, exists := lm.decrementRef("topic", "key")
+	assert.False(t, exists, "should not exist in empty map")
+	assert.Equal(t, 0, count, "decrement on empty map should return 0")
 
 	// setup: add a key with count 3
 	lm["topic"] = map[string]int{"key": 3}
 
 	// first decrement
-	count = lm.decrementRef("topic", "key")
+	count, exists = lm.decrementRef("topic", "key")
+	assert.True(t, exists, "should exist")
 	assert.Equal(t, 2, count, "first decrement should return 2")
 	assert.Equal(t, 2, lm["topic"]["key"], "map should contain count of 2")
 
 	// second decrement
-	count = lm.decrementRef("topic", "key")
+	count, exists = lm.decrementRef("topic", "key")
+	assert.True(t, exists, "should exist")
 	assert.Equal(t, 1, count, "second decrement should return 1")
 
 	// decrement to zero
-	count = lm.decrementRef("topic", "key")
+	count, exists = lm.decrementRef("topic", "key")
+	assert.True(t, exists, "should exist")
 	assert.Equal(t, 0, count, "decrement to zero should return 0")
 
-	// decrement below zero
-	count = lm.decrementRef("topic", "key")
+	// decrement below zero (this is now prevented by logic in decrementRef, but if it existed...)
+	// Note: decrementRef only decrements if key exists. Since we don't delete the key inside decrementRef itself,
+	// it can technically go below zero if called repeatedly.
+	count, exists = lm.decrementRef("topic", "key")
+	assert.True(t, exists, "should exist")
 	assert.Equal(t, -1, count, "decrement below zero should return -1")
 
 	// decrement non-existent key in existing topic
-	count = lm.decrementRef("topic", "other-key")
-	assert.Equal(t, -1, count, "decrement non-existent key should return -1")
+	count, exists = lm.decrementRef("topic", "other-key")
+	assert.False(t, exists, "should not exist")
+	assert.Equal(t, 0, count, "decrement non-existent key should return 0")
 }
 
 func TestLockMap_RemoveKey(t *testing.T) {
