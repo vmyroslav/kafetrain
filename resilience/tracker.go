@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -697,13 +698,22 @@ func (t *ErrorTracker) HandleMaxRetriesExceeded(ctx context.Context, message *In
 	return nil
 }
 
-func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, message *InternalMessage) error {
-	// Check if this message has a scheduled retry time
-	nextRetryTime, ok := GetHeaderValue[time.Time](&message.Headers, HeaderRetryNextTime)
+func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, msg Message) error {
+	// check if this message has a scheduled retry time
+	nextTimeBytes, ok := msg.Headers().Get(HeaderRetryNextTime)
 	if !ok {
 		return nil
 	}
 
+	// Parse timestamp (stored as Unix string)
+	ts, err := strconv.ParseInt(string(nextTimeBytes), 10, 64)
+	if err != nil {
+		// Log warning but don't block if header is corrupted
+		t.logger.Warn("invalid retry timestamp header", "error", err)
+		return nil
+	}
+
+	nextRetryTime := time.Unix(ts, 0)
 	now := time.Now()
 	if !now.Before(nextRetryTime) {
 		return nil
@@ -713,7 +723,7 @@ func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, message *InternalMe
 	delay := nextRetryTime.Sub(now)
 
 	t.logger.Debug("waiting before retry processing",
-		"topic", message.topic,
+		"topic", msg.Topic(),
 		"delay", delay,
 		"scheduled_for", nextRetryTime,
 	)
@@ -722,7 +732,7 @@ func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, message *InternalMe
 	select {
 	case <-time.After(delay):
 		t.logger.Debug("delay complete, processing message",
-			"topic", message.topic,
+			"topic", msg.Topic(),
 		)
 
 		return nil
