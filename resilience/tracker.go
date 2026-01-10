@@ -60,6 +60,16 @@ func NewErrorTracker(
 	return &t, nil
 }
 
+// Start initializes the complete resilience loop for a topic.
+// 1. It starts the control plane (StartTracking) to manage ordering locks and state restoration.
+// 2. It starts the data plane (StartRetryWorker) to process retry messages with backoff.
+func (t *ErrorTracker) Start(ctx context.Context, topic string, handler ConsumerHandler) error {
+	if err := t.StartTracking(ctx, topic); err != nil {
+		return err
+	}
+	return t.StartRetryWorker(ctx, topic, handler)
+}
+
 // StartTracking starts the redirect topic consumer to manage message chain tracking.
 func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
 	// ensure topics exist before starting
@@ -291,6 +301,86 @@ func (t *ErrorTracker) startRedirectConsumer(ctx context.Context, topic string) 
 	}()
 
 	return nil
+}
+
+// StartRetryWorker starts a background consumer for the retry topic.
+// This worker automatically handles backoff delays, retries, and lifecycle management (Redirect/Free).
+// It implements the Bulkhead Pattern, keeping retry processing separate from the main consumer.
+func (t *ErrorTracker) StartRetryWorker(ctx context.Context, topic string, handler ConsumerHandler) error {
+	retryTopic := t.retryTopic(topic)
+	retryConsumerGroup := t.cfg.GroupID + "-retry"
+
+	retryConsumer, err := t.consumerFactory.NewConsumer(retryConsumerGroup)
+	if err != nil {
+		return fmt.Errorf("failed to create retry consumer: %w", err)
+	}
+
+	workerHandler := &retryWorkerHandler{
+		t:           t,
+		userHandler: handler,
+	}
+
+	go func() {
+		defer retryConsumer.Close()
+		// We ignore the error here as it's typically just context cancellation
+		// Real errors are logged by the consumer adapter or should be handled by a more robust supervisor
+		_ = retryConsumer.Consume(ctx, []string{retryTopic}, workerHandler)
+	}()
+
+	t.logger.Info("started background retry worker",
+		"topic", retryTopic,
+		"group_id", retryConsumerGroup,
+	)
+
+	return nil
+}
+
+type retryWorkerHandler struct {
+	t           *ErrorTracker
+	userHandler ConsumerHandler
+}
+
+func (h *retryWorkerHandler) Handle(ctx context.Context, msg Message) error {
+	// 1. Wait for backoff delay
+	if err := h.t.WaitForRetryTime(ctx, msg); err != nil {
+		return err
+	}
+
+	// 2. Call user's business logic
+	err := h.userHandler.Handle(ctx, msg)
+
+	// 3. Handle result
+	if err != nil {
+		// Failed again -> Redirect (will check max retries internally)
+		return h.t.Redirect(ctx, msg, err)
+	}
+
+	// Success -> Free the lock
+	return h.t.Free(ctx, msg)
+}
+
+// NewResilientHandler wraps a user handler with resilience logic for the MAIN topic.
+// It automatically handles strict ordering checks and error redirection.
+// Usage: mainConsumer.Consume(ctx, topics, tracker.NewResilientHandler(myHandler))
+func (t *ErrorTracker) NewResilientHandler(handler ConsumerHandler) ConsumerHandler {
+	return ConsumerHandlerFunc(func(ctx context.Context, msg Message) error {
+		// 1. Strict Ordering Check
+		// If this key is currently retrying (from a previous message), we must
+		// redirect this new message to the retry queue to maintain order.
+		if t.IsInRetryChain(msg) {
+			return t.Redirect(ctx, msg, errors.New("strict ordering: predecessor in retry"))
+		}
+
+		// 2. Process Message
+		if err := handler.Handle(ctx, msg); err != nil {
+			// Failure -> Start retry chain
+			return t.Redirect(ctx, msg, err)
+		}
+
+		// 3. Success
+		// No need to call Free() here because main topic messages don't hold a lock.
+		return nil
+	})
 }
 
 func (t *ErrorTracker) Errors() <-chan error {
