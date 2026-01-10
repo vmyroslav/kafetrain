@@ -18,7 +18,7 @@ func TestKeyTracker_AddMessage(t *testing.T) {
 		{Key: []byte("test-1"), topic: "topic-test-3"}, // Same key, different topic
 	}
 
-	kt := NewKeyTracker()
+	kt := NewKeyMemoryTracker()
 	ctx := t.Context()
 
 	for _, msg := range msgs {
@@ -41,7 +41,7 @@ func TestKeyTracker_AddMessage(t *testing.T) {
 func TestKeyTracker_ReleaseMessage(t *testing.T) {
 	t.Parallel()
 
-	kt := NewKeyTracker()
+	kt := NewKeyMemoryTracker()
 	ctx := t.Context()
 
 	msg := &InternalMessage{Key: []byte("test"), topic: "topic"}
@@ -75,7 +75,7 @@ func TestKeyTracker_ReleaseMessage(t *testing.T) {
 func TestKeyTracker_MultipleTopicsAndKeys(t *testing.T) {
 	t.Parallel()
 
-	kt := NewKeyTracker()
+	kt := NewKeyMemoryTracker()
 	ctx := t.Context()
 
 	// Test multiple topics with different keys

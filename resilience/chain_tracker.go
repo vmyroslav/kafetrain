@@ -16,17 +16,17 @@ type MessageChainTracker interface {
 	ReleaseMessage(ctx context.Context, msg *InternalMessage) error
 }
 
-type KeyTracker struct {
+type KeyMemoryTracker struct {
 	lm lockMap
 
 	mu sync.RWMutex
 }
 
-func NewKeyTracker() *KeyTracker {
-	return &KeyTracker{lm: make(lockMap)}
+func NewKeyMemoryTracker() *KeyMemoryTracker {
+	return &KeyMemoryTracker{lm: make(lockMap)}
 }
 
-func (kt *KeyTracker) IsRelated(_ context.Context, msg *InternalMessage) bool {
+func (kt *KeyMemoryTracker) IsRelated(_ context.Context, msg *InternalMessage) bool {
 	kt.mu.RLock()
 	defer kt.mu.RUnlock()
 
@@ -36,7 +36,7 @@ func (kt *KeyTracker) IsRelated(_ context.Context, msg *InternalMessage) bool {
 	return exists && count > 0
 }
 
-func (kt *KeyTracker) AddMessage(_ context.Context, msg *InternalMessage) (string, error) {
+func (kt *KeyMemoryTracker) AddMessage(_ context.Context, msg *InternalMessage) (string, error) {
 	kt.mu.Lock()
 	defer kt.mu.Unlock()
 
@@ -48,7 +48,7 @@ func (kt *KeyTracker) AddMessage(_ context.Context, msg *InternalMessage) (strin
 	return key, nil
 }
 
-func (kt *KeyTracker) ReleaseMessage(_ context.Context, msg *InternalMessage) error {
+func (kt *KeyMemoryTracker) ReleaseMessage(_ context.Context, msg *InternalMessage) error {
 	topic := msg.topic
 	key := string(msg.Key)
 
@@ -58,9 +58,8 @@ func (kt *KeyTracker) ReleaseMessage(_ context.Context, msg *InternalMessage) er
 	// decrement reference count
 	newCount, exists := kt.lm.decrementRef(topic, key)
 
+	// key wasn't tracked, this is idempotent, but implies Free() was called on a message not in the chain
 	if !exists {
-		// key wasn't tracked, this is idempotent, but
-		// implies Free() was called on a message not in the chain.
 		return nil
 	}
 
@@ -93,8 +92,7 @@ func (lm lockMap) getRefCount(topic, key string) (int, bool) {
 	return count, ok
 }
 
-// incrementRef increments the reference count for a topic/key pair.
-// Initializes topic map if needed. Returns the new reference count.
+// incrementRef increments the reference count for a topic/key pair
 func (lm lockMap) incrementRef(topic, key string) int {
 	if lm[topic] == nil {
 		lm[topic] = make(map[string]int)
@@ -121,8 +119,7 @@ func (lm lockMap) decrementRef(topic, key string) (int, bool) {
 	return lm[topic][key], true
 }
 
-// removeKey removes a key from a topic.
-// No-op if topic or key doesn't exist.
+// removeKey removes a key from a topic
 func (lm lockMap) removeKey(topic, key string) {
 	if lm[topic] == nil {
 		return

@@ -10,6 +10,7 @@ type Producer interface {
 	Produce(ctx context.Context, topic string, msg Message) error
 
 	// ProduceBatch publishes multiple messages atomically
+	//TODO: use it insted of SAGA?
 	ProduceBatch(ctx context.Context, messages []MessageTarget) error
 
 	// Close releases producer resources

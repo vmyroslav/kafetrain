@@ -63,19 +63,20 @@ func NewHeaders(headers []*sarama.RecordHeader) resilience.Headers {
 	return &Headers{headers: headers}
 }
 
-// Get implements retry.Headers interface.
+// Get retrieves the value of a header by key.
 func (h *Headers) Get(key string) ([]byte, bool) {
 	for _, header := range h.headers {
 		if string(header.Key) == key {
 			return header.Value, true
 		}
 	}
+
 	return nil, false
 }
 
-// Set implements retry.Headers interface.
+// Set sets the value of a header by key.
 func (h *Headers) Set(key string, value []byte) {
-	// Check if header exists, update it
+	// check if header exists, update it
 	for i, header := range h.headers {
 		if string(header.Key) == key {
 			h.headers[i].Value = value
@@ -94,24 +95,26 @@ func (h *Headers) Set(key string, value []byte) {
 func (h *Headers) Delete(key string) {
 	for i, header := range h.headers {
 		if string(header.Key) == key {
-			// Remove by swapping with last element and truncating
+			// remove by swapping with last element and truncating
 			h.headers[i] = h.headers[len(h.headers)-1]
 			h.headers = h.headers[:len(h.headers)-1]
+
 			return
 		}
 	}
 }
 
-// All implements retry.Headers interface.
+// All returns all headers as a map.
 func (h *Headers) All() map[string][]byte {
 	result := make(map[string][]byte, len(h.headers))
 	for _, header := range h.headers {
 		result[string(header.Key)] = header.Value
 	}
+
 	return result
 }
 
-// Clone implements retry.Headers interface.
+// Clone returns a deep copy of the headers.
 func (h *Headers) Clone() resilience.Headers {
 	cloned := make([]*sarama.RecordHeader, len(h.headers))
 	for i, header := range h.headers {
@@ -120,22 +123,22 @@ func (h *Headers) Clone() resilience.Headers {
 			Value: append([]byte(nil), header.Value...),
 		}
 	}
+
 	return &Headers{headers: cloned}
 }
 
 // ToSaramaHeaders converts retry.Headers to Sarama RecordHeaders.
-// This is used when producing messages back to Kafka.
 func ToSaramaHeaders(headers resilience.Headers) []sarama.RecordHeader {
 	if h, ok := headers.(*Headers); ok {
-		// Already Sarama headers, convert pointer slice to value slice
 		result := make([]sarama.RecordHeader, len(h.headers))
 		for i, header := range h.headers {
 			result[i] = *header
 		}
+
 		return result
 	}
 
-	// Convert from generic Headers to Sarama format
+	// convert from generic Headers to Sarama format
 	all := headers.All()
 	result := make([]sarama.RecordHeader, 0, len(all))
 	for k, v := range all {
@@ -144,5 +147,6 @@ func ToSaramaHeaders(headers resilience.Headers) []sarama.RecordHeader {
 			Value: v,
 		})
 	}
+
 	return result
 }

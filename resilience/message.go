@@ -160,6 +160,7 @@ func SetHeader[T any](h *HeaderList, key string, value T) {
 		valStr = strconv.Itoa(v)
 	case time.Time:
 		valStr = strconv.FormatInt(v.Unix(), 10)
+		//TODO: don't panic here, return error instead
 	default:
 		panic(fmt.Sprintf("SetHeader: unsupported type %T (use string, int, or time.Time)", value))
 	}

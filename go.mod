@@ -3,6 +3,7 @@ module github.com/vmyroslav/kafetrain
 go 1.25
 
 require (
+	github.com/avast/retry-go/v4 v4.7.0
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.11.1
 	golang.org/x/sync v0.19.0

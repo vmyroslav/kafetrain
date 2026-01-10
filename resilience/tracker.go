@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/avast/retry-go/v4"
 	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 )
@@ -15,8 +16,8 @@ import (
 // ErrorTracker is the library-agnostic core retry tracking implementation.
 // It uses interfaces to remain independent of any specific Kafka library.
 type ErrorTracker struct {
-	comparator      MessageChainTracker
-	backoffStrategy BackoffStrategy
+	chainTracker    MessageChainTracker
+	backoff         BackoffStrategy
 	logger          Logger
 	producer        Producer
 	consumerFactory ConsumerFactory
@@ -37,7 +38,7 @@ func NewErrorTracker(
 	backoff BackoffStrategy,
 ) (*ErrorTracker, error) {
 	if comparator == nil {
-		comparator = NewKeyTracker()
+		comparator = NewKeyMemoryTracker()
 	}
 
 	if backoff == nil {
@@ -50,8 +51,8 @@ func NewErrorTracker(
 		producer:        producer,
 		consumerFactory: consumerFactory,
 		admin:           admin,
-		comparator:      comparator,
-		backoffStrategy: backoff,
+		chainTracker:    comparator,
+		backoff:         backoff,
 		errors:          make(chan error, 256),
 	}
 
@@ -75,7 +76,7 @@ func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
 // ensureTopicsExist creates retry, redirect, and DLQ topics if they don't exist.
 // Queries primary topic partition count and creates topics with matching partitions.
 func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) error {
-	// Determine partition count
+	// determine partition count
 	partitions := t.cfg.RetryTopicPartitions
 
 	// if config is 0 (default), query primary topic
@@ -237,34 +238,28 @@ func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
 	}
 
 	// Delete ephemeral consumer group with retry to prevent pollution.
-	// We use a linear backoff to give Kafka time to release resources between attempts.
-	maxRetries := 5
-	var deleteErr error
-
-	for i := 0; i < maxRetries; i++ {
-		deleteErr = t.admin.DeleteConsumerGroup(ctx, refillCfg.GroupID)
-		if deleteErr == nil {
-			t.logger.Debug("successfully deleted ephemeral consumer group",
-				"group_id", refillCfg.GroupID,
-			)
-			break
-		}
-
-		t.logger.Warn("failed to delete ephemeral consumer group, retrying",
-			"group_id", refillCfg.GroupID,
-			"error", deleteErr,
-			"attempt", i+1,
-			"max_retries", maxRetries,
-		)
-
-		if i < maxRetries-1 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Duration(i+1) * time.Second):
+	deleteErr := retry.Do(
+		func() error {
+			err := t.admin.DeleteConsumerGroup(ctx, refillCfg.GroupID)
+			if err == nil {
+				t.logger.Debug("successfully deleted ephemeral consumer group",
+					"group_id", refillCfg.GroupID,
+				)
 			}
-		}
-	}
+			return err
+		},
+		retry.Attempts(5),
+		retry.Delay(1*time.Second),
+		retry.Context(ctx),
+		retry.OnRetry(func(n uint, err error) {
+			t.logger.Warn("failed to delete ephemeral consumer group, retrying",
+				"group_id", refillCfg.GroupID,
+				"error", err,
+				"attempt", n+1,
+				"max_retries", 5,
+			)
+		}),
+	)
 
 	if deleteErr != nil {
 		// Log as Error because this leaves garbage in the cluster that requires manual cleanup.
@@ -320,7 +315,7 @@ func (t *ErrorTracker) GetDLQTopic(topic string) string {
 // Returns true if the message key is currently being tracked for retries.
 func (t *ErrorTracker) IsInRetryChain(msg Message) bool {
 	internalMsg := t.toInternalMessage(msg)
-	return t.comparator.IsRelated(context.Background(), internalMsg)
+	return t.chainTracker.IsRelated(context.Background(), internalMsg)
 }
 
 // Redirect sends a failed message to the retry topic for reprocessing.
@@ -328,7 +323,7 @@ func (t *ErrorTracker) IsInRetryChain(msg Message) bool {
 func (t *ErrorTracker) Redirect(ctx context.Context, msg Message, lastError error) error {
 	internalMsg := t.toInternalMessage(msg)
 
-	// We used to check t.comparator.IsRelated here and skip redirect if true.
+	// We used to check t.chainTracker.IsRelated here and skip redirect if true.
 	// However, that caused data loss because the message was marked as "handled" but not persisted anywhere.
 	// We MUST persist the message to the retry topic to maintain the queue/order.
 	// The redirect topic (lock) update is idempotent.
@@ -370,6 +365,11 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 	// Calculate retry metadata
 	currentAttempt, _ := GetHeaderValue[int](&msg.Headers, HeaderRetryAttempt)
 
+	// Check if max retries would be exceeded
+	if currentAttempt >= t.cfg.MaxRetries {
+		return t.HandleMaxRetriesExceeded(ctx, msg, currentAttempt, t.cfg.MaxRetries)
+	}
+
 	originalTime, ok := GetHeaderValue[time.Time](&msg.Headers, HeaderRetryOriginalTime)
 	if !ok {
 		originalTime = time.Now()
@@ -382,7 +382,7 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 		originalTopic = msg.topic
 	}
 
-	nextDelay := t.backoffStrategy.NextDelay(currentAttempt)
+	nextDelay := t.backoff.NextDelay(currentAttempt)
 	nextRetryTime := time.Now().Add(nextDelay)
 	nextAttempt := currentAttempt + 1
 
@@ -413,13 +413,14 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 
 		// Rollback: try to unlock the key since we failed to send the retry message.
 		// We retry this critical operation to avoid leaving a "Zombie Key" (locked forever).
-		var rollbackErr error
-		for i := 0; i < 3; i++ {
-			if rollbackErr = t.freeMessage(ctx, msg); rollbackErr == nil {
-				break
-			}
-			time.Sleep(200 * time.Millisecond)
-		}
+		rollbackErr := retry.Do(
+			func() error {
+				return t.freeMessage(ctx, msg)
+			},
+			retry.Attempts(3),
+			retry.Delay(200*time.Millisecond),
+			retry.Context(ctx),
+		)
 
 		if rollbackErr != nil {
 			t.logger.Error("CRITICAL: failed to rollback redirect lock after retry publish failure. Key may be permanently locked!",
@@ -556,14 +557,14 @@ func (t *ErrorTracker) processRedirectMessage(ctx context.Context, msg Message) 
 		return errors.New("redirect message missing key header")
 	}
 
-	// Reconstruct original message to restore to comparator
+	// Reconstruct original message to restore to chainTracker
 	originalMsg := &InternalMessage{
 		topic: string(originalTopicBytes),
 		Key:   originalKeyBytes,
 	}
 
-	// Restore to comparator's tracking state
-	_, err := t.comparator.AddMessage(ctx, originalMsg)
+	// Restore to chainTracker's tracking state
+	_, err := t.chainTracker.AddMessage(ctx, originalMsg)
 	return err
 }
 
@@ -578,7 +579,7 @@ func (t *ErrorTracker) ReleaseMessage(ctx context.Context, msg *InternalMessage)
 		return errors.New("key header not found")
 	}
 
-	if err := t.comparator.ReleaseMessage(ctx, &InternalMessage{
+	if err := t.chainTracker.ReleaseMessage(ctx, &InternalMessage{
 		Key:   []byte(key),
 		topic: topic,
 	}); err != nil {
