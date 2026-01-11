@@ -36,6 +36,7 @@ type KafkaStateCoordinator struct {
 	errors          chan<- error
 }
 
+// TODO: add integration tests
 func NewKafkaStateCoordinator(
 	cfg *Config,
 	logger Logger,
@@ -79,7 +80,7 @@ func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 
 func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error {
 	id, ok := GetHeaderValue[string](&msg.Headers, headerID)
-	if !ok {
+	if !ok { //TODO: WHY?
 		id = string(msg.Key)
 	}
 
@@ -107,7 +108,7 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 
 func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessage) error {
 	id, ok := GetHeaderValue[string](&msg.Headers, headerID)
-	if !ok {
+	if !ok { //TODO: WHY?
 		id = string(msg.Key)
 	}
 
@@ -140,7 +141,7 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 
 func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic string) error {
 	partitions := k.cfg.RetryTopicPartitions
-	if partitions == 0 {
+	if partitions == 0 { // empty means "use same partition count as primary topic"
 		metadata, err := k.admin.DescribeTopics(ctx, []string{topic})
 		if err != nil {
 			return fmt.Errorf("failed to describe primary topic '%s': %w", topic, err)
@@ -152,7 +153,7 @@ func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic s
 
 	return k.admin.CreateTopic(ctx, k.redirectTopic(topic), partitions, 1, map[string]string{
 		"cleanup.policy": "compact",
-		"segment.ms":     "100",
+		"segment.ms":     "100", // TODO: make configurable
 	})
 }
 
@@ -205,8 +206,9 @@ func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) 
 	_ = refillConsumer.Consume(refillCtx, []string{k.redirectTopic(topic)}, handler)
 	refillConsumer.Close()
 
-	// Clean up ephemeral group
+	// clean up ephemeral group
 	go func() {
+		//TODO: add retry with backoff
 		_ = k.admin.DeleteConsumerGroup(context.Background(), refillCfg.GroupID)
 	}()
 
@@ -231,7 +233,7 @@ func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic
 
 func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg Message) error {
 	if msg.Value() == nil {
-		return k.ReleaseMessage(ctx, k.toInternalMessage(msg))
+		return k.ReleaseMessage(ctx, NewFromMessage(msg))
 	}
 
 	originalTopicBytes, ok := msg.Headers().Get(HeaderTopic)
@@ -268,27 +270,9 @@ func (k *KafkaStateCoordinator) ReleaseMessage(ctx context.Context, msg *Interna
 	})
 }
 
-func (k *KafkaStateCoordinator) toInternalMessage(msg Message) *InternalMessage {
-	headers := make(HeaderList, 0)
-	for key, value := range msg.Headers().All() {
-		headers = append(headers, Header{Key: []byte(key), Value: value})
-	}
-	return &InternalMessage{
-		topic:     msg.Topic(),
-		partition: msg.Partition(),
-		offset:    msg.Offset(),
-		Key:       msg.Key(),
-		Payload:   msg.Value(),
-		Headers:   headers,
-		Timestamp: msg.Timestamp(),
-	}
-}
-
 func (k *KafkaStateCoordinator) redirectTopic(topic string) string {
 	return k.cfg.RedirectTopicPrefix + "_" + topic
 }
-
-// Internal Handlers
 
 type redirectFillHandler struct {
 	k            *KafkaStateCoordinator

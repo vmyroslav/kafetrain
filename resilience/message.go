@@ -69,6 +69,23 @@ type InternalMessage struct {
 	partition int32
 }
 
+func NewFromMessage(msg Message) *InternalMessage {
+	headers := make(HeaderList, 0)
+	for key, value := range msg.Headers().All() {
+		headers = append(headers, Header{Key: []byte(key), Value: value})
+	}
+
+	return &InternalMessage{
+		topic:     msg.Topic(),
+		partition: msg.Partition(),
+		offset:    msg.Offset(),
+		Key:       msg.Key(),
+		Payload:   msg.Value(),
+		Headers:   headers,
+		Timestamp: msg.Timestamp(),
+	}
+}
+
 // Topic returns the topic name of the message.
 func (m *InternalMessage) Topic() string {
 	return m.topic

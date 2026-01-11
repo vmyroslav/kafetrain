@@ -536,6 +536,7 @@ func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, msg Message) error 
 	}
 }
 
+// TODO: remove it
 // messageWrapper is an internal wrapper that implements the Message interface.
 // Used for producing messages via the library-agnostic Producer interface.
 type messageWrapper struct {
