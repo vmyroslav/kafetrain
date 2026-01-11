@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -11,14 +12,17 @@ import (
 )
 
 // StateCoordinator abstracts the mechanism for acquiring and releasing locks on message keys.
+// It allows swapping the default Kafka-topic-based coordination with external stores like Redis.
 type StateCoordinator interface {
 	// Start initializes the coordinator (e.g., starts background listeners).
 	Start(ctx context.Context, topic string) error
 
 	// Acquire locks the key to ensure strict ordering.
+	// For Kafka: Publishes to the redirect topic.
 	Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error
 
 	// Release unlocks the key.
+	// For Kafka: Publishes a tombstone to the redirect topic.
 	Release(ctx context.Context, msg *InternalMessage) error
 
 	// IsLocked checks if the key is currently locked.
@@ -27,7 +31,8 @@ type StateCoordinator interface {
 
 // KafkaStateCoordinator implements StateCoordinator using a compacted Kafka topic and local memory.
 type KafkaStateCoordinator struct {
-	tracker         MessageChainTracker
+	lm              lockMap
+	mu              sync.RWMutex
 	producer        Producer
 	consumerFactory ConsumerFactory
 	admin           Admin
@@ -36,22 +41,16 @@ type KafkaStateCoordinator struct {
 	errors          chan<- error
 }
 
-// TODO: add integration tests
 func NewKafkaStateCoordinator(
 	cfg *Config,
 	logger Logger,
 	producer Producer,
 	consumerFactory ConsumerFactory,
 	admin Admin,
-	tracker MessageChainTracker,
 	errCh chan<- error,
 ) *KafkaStateCoordinator {
-	if tracker == nil {
-		tracker = NewKeyMemoryTracker()
-	}
-
 	return &KafkaStateCoordinator{
-		tracker:         tracker,
+		lm:              make(lockMap),
 		producer:        producer,
 		consumerFactory: consumerFactory,
 		admin:           admin,
@@ -62,25 +61,33 @@ func NewKafkaStateCoordinator(
 }
 
 func (k *KafkaStateCoordinator) IsLocked(ctx context.Context, msg *InternalMessage) bool {
-	return k.tracker.IsRelated(ctx, msg)
+	k.mu.RLock()
+	defer k.mu.RUnlock()
+
+	// if key for this topic has a reference count > 0, then message is related
+	count, exists := k.lm.getRefCount(msg.topic, string(msg.Key))
+
+	return exists && count > 0
 }
 
 func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
+	// Ensure redirect topic exists
 	if err := k.ensureRedirectTopic(ctx, topic); err != nil {
 		return err
 	}
 
+	// Restore state from redirect topic
 	if err := k.restoreState(ctx, topic); err != nil {
 		return err
 	}
 
-	// start live monitoring of redirect topic
+	// Start live monitoring of redirect topic
 	return k.startRedirectConsumer(ctx, topic)
 }
 
 func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error {
 	id, ok := GetHeaderValue[string](&msg.Headers, headerID)
-	if !ok { //TODO: WHY?
+	if !ok {
 		id = string(msg.Key)
 	}
 
@@ -108,7 +115,7 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 
 func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessage) error {
 	id, ok := GetHeaderValue[string](&msg.Headers, headerID)
-	if !ok { //TODO: WHY?
+	if !ok {
 		id = string(msg.Key)
 	}
 
@@ -141,7 +148,7 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 
 func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic string) error {
 	partitions := k.cfg.RetryTopicPartitions
-	if partitions == 0 { // empty means "use same partition count as primary topic"
+	if partitions == 0 {
 		metadata, err := k.admin.DescribeTopics(ctx, []string{topic})
 		if err != nil {
 			return fmt.Errorf("failed to describe primary topic '%s': %w", topic, err)
@@ -153,7 +160,7 @@ func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic s
 
 	return k.admin.CreateTopic(ctx, k.redirectTopic(topic), partitions, 1, map[string]string{
 		"cleanup.policy": "compact",
-		"segment.ms":     "100", // TODO: make configurable
+		"segment.ms":     "100",
 	})
 }
 
@@ -206,9 +213,8 @@ func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) 
 	_ = refillConsumer.Consume(refillCtx, []string{k.redirectTopic(topic)}, handler)
 	refillConsumer.Close()
 
-	// clean up ephemeral group
+	// Clean up ephemeral group
 	go func() {
-		//TODO: add retry with backoff
 		_ = k.admin.DeleteConsumerGroup(context.Background(), refillCfg.GroupID)
 	}()
 
@@ -233,7 +239,7 @@ func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic
 
 func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg Message) error {
 	if msg.Value() == nil {
-		return k.ReleaseMessage(ctx, NewFromMessage(msg))
+		return k.ReleaseMessage(ctx, k.toInternalMessage(msg))
 	}
 
 	originalTopicBytes, ok := msg.Headers().Get(HeaderTopic)
@@ -250,8 +256,20 @@ func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg 
 		Key:   originalKeyBytes,
 	}
 
-	_, err := k.tracker.AddMessage(ctx, originalMsg)
+	_, err := k.addMessage(ctx, originalMsg)
 	return err
+}
+
+func (k *KafkaStateCoordinator) addMessage(_ context.Context, msg *InternalMessage) (string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	key := string(msg.Key)
+
+	// increment reference count for this key
+	k.lm.incrementRef(msg.topic, key)
+
+	return key, nil
 }
 
 func (k *KafkaStateCoordinator) ReleaseMessage(ctx context.Context, msg *InternalMessage) error {
@@ -264,10 +282,44 @@ func (k *KafkaStateCoordinator) ReleaseMessage(ctx context.Context, msg *Interna
 		return errors.New("key header not found")
 	}
 
-	return k.tracker.ReleaseMessage(ctx, &InternalMessage{
-		Key:   []byte(key),
-		topic: topic,
-	})
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	// decrement reference count
+	newCount, exists := k.lm.decrementRef(topic, key)
+
+	// key wasn't tracked, this is idempotent
+	if !exists {
+		return nil
+	}
+
+	// remove key when count reaches 0
+	if newCount <= 0 {
+		k.lm.removeKey(topic, key)
+	}
+
+	// clean up topic map if empty
+	if k.lm.isTopicEmpty(topic) {
+		k.lm.removeTopic(topic)
+	}
+
+	return nil
+}
+
+func (k *KafkaStateCoordinator) toInternalMessage(msg Message) *InternalMessage {
+	headers := make(HeaderList, 0)
+	for key, value := range msg.Headers().All() {
+		headers = append(headers, Header{Key: []byte(key), Value: value})
+	}
+	return &InternalMessage{
+		topic:     msg.Topic(),
+		partition: msg.Partition(),
+		offset:    msg.Offset(),
+		Key:       msg.Key(),
+		Payload:   msg.Value(),
+		Headers:   headers,
+		Timestamp: msg.Timestamp(),
+	}
 }
 
 func (k *KafkaStateCoordinator) redirectTopic(topic string) string {
@@ -290,4 +342,77 @@ type RedirectHandler struct {
 
 func (r *RedirectHandler) Handle(ctx context.Context, msg Message) error {
 	return r.k.processRedirectMessage(ctx, msg)
+}
+
+// topic map ['topic-name' => ['topic-key' => refCount]].
+// Reference counting ensures keys are unlocked only when all messages with that key complete.
+type lockMap map[string]map[string]int
+
+// getRefCount returns the reference count for a topic/key pair.
+// Returns (count, exists) - exists is false if topic or key doesn't exist.
+func (lm lockMap) getRefCount(topic, key string) (int, bool) {
+	if lm[topic] == nil {
+		return 0, false
+	}
+
+	count, ok := lm[topic][key]
+
+	return count, ok
+}
+
+// incrementRef increments the reference count for a topic/key pair
+func (lm lockMap) incrementRef(topic, key string) int {
+	if lm[topic] == nil {
+		lm[topic] = make(map[string]int)
+	}
+
+	lm[topic][key]++
+
+	return lm[topic][key]
+}
+
+// decrementRef decrements the reference count for a topic/key pair.
+// Returns the new reference count and whether the key existed.
+func (lm lockMap) decrementRef(topic, key string) (int, bool) {
+	if lm[topic] == nil {
+		return 0, false
+	}
+
+	if _, ok := lm[topic][key]; !ok {
+		return 0, false
+	}
+
+	lm[topic][key]--
+
+	return lm[topic][key], true
+}
+
+// removeKey removes a key from a topic
+func (lm lockMap) removeKey(topic, key string) {
+	if lm[topic] == nil {
+		return
+	}
+
+	delete(lm[topic], key)
+}
+
+// removeTopic removes an entire topic and all its keys.
+func (lm lockMap) removeTopic(topic string) {
+	delete(lm, topic)
+}
+
+// isTopicEmpty returns true if topic has no keys or doesn't exist.
+func (lm lockMap) isTopicEmpty(topic string) bool {
+	return len(lm[topic]) == 0
+}
+
+// hasKey returns true if the topic/key pair exists (regardless of count value).
+func (lm lockMap) hasKey(topic, key string) bool {
+	if lm[topic] == nil {
+		return false
+	}
+
+	_, ok := lm[topic][key]
+
+	return ok
 }

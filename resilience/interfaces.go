@@ -4,7 +4,7 @@ import (
 	"context"
 )
 
-//go:generate go tool moq -out moq_test.go . Producer Consumer ConsumerFactory Admin Logger MessageChainTracker StateCoordinator
+//go:generate go tool moq -out moq_test.go . Producer Consumer ConsumerFactory Admin Logger StateCoordinator
 
 // Producer publishes messages to Kafka topics (library-agnostic).
 type Producer interface {

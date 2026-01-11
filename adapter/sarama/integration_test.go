@@ -248,7 +248,6 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 		producer,
 		consumerFactory,
 		admin,
-		resilience.NewKeyMemoryTracker(),
 		nil,
 	)
 	require.NoError(t, err, "failed to create error tracker")
@@ -559,7 +558,6 @@ func TestIntegration_ChainRetry(t *testing.T) {
 		producer,
 		consumerFactory,
 		admin,
-		resilience.NewKeyMemoryTracker(),
 		nil,
 	)
 	require.NoError(t, err, "failed to create error tracker")
@@ -785,7 +783,6 @@ func TestIntegration_DLQ(t *testing.T) {
 		producer,
 		consumerFactory,
 		admin,
-		resilience.NewKeyMemoryTracker(),
 		nil,
 	)
 	require.NoError(t, err, "failed to create error tracker")
@@ -1085,7 +1082,6 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 		producer,
 		consumerFactory,
 		admin,
-		resilience.NewKeyMemoryTracker(),
 		nil,
 	)
 	require.NoError(t, err, "failed to create error tracker")

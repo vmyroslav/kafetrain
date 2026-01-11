@@ -32,7 +32,6 @@ func NewErrorTracker(
 	producer Producer,
 	consumerFactory ConsumerFactory,
 	admin Admin,
-	comparator MessageChainTracker,
 	backoff BackoffStrategy,
 ) (*ErrorTracker, error) {
 	if backoff == nil {
@@ -48,7 +47,6 @@ func NewErrorTracker(
 		producer,
 		consumerFactory,
 		admin,
-		comparator,
 		errCh,
 	)
 
