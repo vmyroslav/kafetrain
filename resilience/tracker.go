@@ -5,19 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/avast/retry-go/v4"
-	"github.com/google/uuid"
 	"golang.org/x/sync/errgroup"
 )
 
 // ErrorTracker is the library-agnostic core retry tracking implementation.
 // It uses interfaces to remain independent of any specific Kafka library.
 type ErrorTracker struct {
-	chainTracker    MessageChainTracker
+	coordinator     StateCoordinator
 	backoff         BackoffStrategy
 	logger          Logger
 	producer        Producer
@@ -38,13 +35,22 @@ func NewErrorTracker(
 	comparator MessageChainTracker,
 	backoff BackoffStrategy,
 ) (*ErrorTracker, error) {
-	if comparator == nil {
-		comparator = NewKeyMemoryTracker()
-	}
-
 	if backoff == nil {
 		backoff = NewExponentialBackoff()
 	}
+
+	errCh := make(chan error, 256)
+
+	// Default to Kafka-based coordination
+	coordinator := NewKafkaStateCoordinator(
+		cfg,
+		logger,
+		producer,
+		consumerFactory,
+		admin,
+		comparator,
+		errCh,
+	)
 
 	t := ErrorTracker{
 		cfg:             cfg,
@@ -52,39 +58,25 @@ func NewErrorTracker(
 		producer:        producer,
 		consumerFactory: consumerFactory,
 		admin:           admin,
-		chainTracker:    comparator,
+		coordinator:     coordinator,
 		backoff:         backoff,
-		errors:          make(chan error, 256),
+		errors:          errCh,
 	}
 
 	return &t, nil
 }
 
 // Start initializes the complete resilience loop for a topic.
-// 1. It starts the control plane (StartTracking) to manage ordering locks and state restoration.
-// 2. It starts the data plane (StartRetryWorker) to process retry messages with backoff.
+// 1. It starts the control plane (Coordinator) to manage ordering locks.
+// 2. It starts the data plane (StartRetryWorker) to process retry messages.
 func (t *ErrorTracker) Start(ctx context.Context, topic string, handler ConsumerHandler) error {
-	if err := t.StartTracking(ctx, topic); err != nil {
+	if err := t.coordinator.Start(ctx, topic); err != nil {
 		return err
 	}
 	return t.StartRetryWorker(ctx, topic, handler)
 }
 
-// StartTracking starts the redirect topic consumer to manage message chain tracking.
-func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
-	// ensure topics exist before starting
-	if err := t.ensureTopicsExist(ctx, topic); err != nil {
-		return err
-	}
-
-	if err := t.restoreState(ctx, topic); err != nil {
-		return err
-	}
-
-	return t.startRedirectConsumer(ctx, topic)
-}
-
-// ensureTopicsExist creates retry, redirect, and DLQ topics if they don't exist.
+// ensureTopicsExist creates retry and DLQ topics if they don't exist.
 // Queries primary topic partition count and creates topics with matching partitions.
 func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) error {
 	// determine partition count
@@ -120,17 +112,6 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 		return nil
 	})
 
-	// create redirect topic
-	g.Go(func() error {
-		if err := t.admin.CreateTopic(ctx, t.redirectTopic(topic), partitions, 1, map[string]string{
-			"cleanup.policy": "compact",
-			"segment.ms":     "100",
-		}); err != nil {
-			return fmt.Errorf("failed to create redirect topic: %w", err)
-		}
-		return nil
-	})
-
 	// create DLQ topic
 	g.Go(func() error {
 		if err := t.admin.CreateTopic(ctx, t.dlqTopic(topic), partitions, 1, map[string]string{
@@ -145,168 +126,15 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 	return g.Wait()
 }
 
-// restoreState populates the internal MessageChainTracker with existing state from the redirect topic.
-// It performs a "catch-up" read of the redirect topic to ensure the ErrorTracker knows which
-// messages are already in the retry chain before starting live processing.
-//
-// The restoration process works as follows:
-//  1. Creates an ephemeral consumer group with a unique UUID to read the redirect topic from the beginning.
-//     NOTE: The underlying ConsumerFactory must be configured to start reading from the earliest offset
-//     (e.g., auto.offset.reset=earliest) for new consumer groups, otherwise existing state will be skipped.
-//  2. Uses an idle timeout (StateRestoreIdleTimeoutMs) to detect when it has reached the end of the
-//     compacted topic backlog. If no messages are received for this duration, it assumes restoration is complete.
-//  3. Uses a total timeout (StateRestoreTimeoutMs) as a safety bound to ensure startup isn't blocked
-//     indefinitely if the redirect topic has extremely high continuous traffic.
-//  4. Once restoration finishes or times out, it explicitly deletes the ephemeral consumer group
-//     from the Kafka cluster to prevent resource leakage.
-func (t *ErrorTracker) restoreState(ctx context.Context, topic string) error {
-	refillCfg := *t.cfg
-	refillCfg.GroupID = uuid.New().String()
-
-	// create temporary consumer for state restoration
-	refillConsumer, err := t.consumerFactory.NewConsumer(refillCfg.GroupID)
-	if err != nil {
-		return err
-	}
-
-	timeout := time.Duration(t.cfg.StateRestoreTimeoutMs) * time.Millisecond
-	if timeout == 0 {
-		timeout = 30 * time.Second
-	}
-
-	refillCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	// idle timeout
-	idleTimeout := time.Duration(t.cfg.StateRestoreIdleTimeoutMs) * time.Millisecond
-	if idleTimeout == 0 {
-		idleTimeout = 5 * time.Second
-	}
-
-	// Track last activity using heap-allocated atomic to avoid stack pointer issues
-	lastActivity := new(int64)
-	atomic.StoreInt64(lastActivity, time.Now().UnixNano())
-
-	// Track messages restored for logging
-	messagesRestored := new(int64)
-
-	handler := &redirectFillHandler{
-		t:                t,
-		lastActivity:     lastActivity,
-		messagesRestored: messagesRestored,
-	}
-
-	// Monitor for idleness. Use a dedicated context for the goroutine to ensure cleanup.
-	monitorCtx, monitorCancel := context.WithCancel(context.Background())
-	defer monitorCancel()
-
-	// Use WaitGroup to ensure goroutine is fully terminated before function returns
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	go func() {
-		defer wg.Done()
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-refillCtx.Done():
-				return
-			case <-monitorCtx.Done():
-				return
-			case <-ticker.C:
-				last := atomic.LoadInt64(lastActivity)
-				elapsed := time.Since(time.Unix(0, last))
-
-				if elapsed > idleTimeout {
-					t.logger.Debug("state restoration idle timeout reached, stopping consumer",
-						"idle_duration", elapsed,
-						"timeout", idleTimeout,
-						"messages_restored", atomic.LoadInt64(messagesRestored),
-					)
-					cancel()
-					return
-				}
-			}
-		}
-	}()
-
-	errCh := make(chan error, 1)
-
-	go func() {
-		errCh <- refillConsumer.Consume(refillCtx, []string{t.redirectTopic(topic)}, handler)
-	}()
-
-	<-refillCtx.Done()
-
-	// Wait for monitor goroutine to cleanup
-	monitorCancel()
-	wg.Wait()
-
-	if err := refillConsumer.Close(); err != nil {
-		return fmt.Errorf("failed to close refill consumer during state restoration (topic=%s, group=%s): %w", topic, refillCfg.GroupID, err)
-	}
-
-	// Delete ephemeral consumer group with retry to prevent pollution.
-	deleteErr := retry.Do(
-		func() error {
-			err := t.admin.DeleteConsumerGroup(ctx, refillCfg.GroupID)
-			if err == nil {
-				t.logger.Debug("successfully deleted ephemeral consumer group",
-					"group_id", refillCfg.GroupID,
-				)
-			}
-			return err
-		},
-		retry.Attempts(5),
-		retry.Delay(1*time.Second),
-		retry.Context(ctx),
-		retry.OnRetry(func(n uint, err error) {
-			t.logger.Warn("failed to delete ephemeral consumer group, retrying",
-				"group_id", refillCfg.GroupID,
-				"error", err,
-				"attempt", n+1,
-				"max_retries", 5,
-			)
-		}),
-	)
-
-	if deleteErr != nil {
-		// Log as Error because this leaves garbage in the cluster that requires manual cleanup.
-		t.logger.Error("CRITICAL: failed to delete ephemeral consumer group after all retries",
-			"group_id", refillCfg.GroupID,
-			"error", deleteErr,
-			"impact", "consumer group pollution",
-		)
-		// We do not return the error here to allow the application to start up despite the leak.
-	}
-
-	return nil
-}
-
-// startRedirectConsumer starts only the redirect topic consumer.
-// This consumer processes tombstones to release messages from tracking.
-func (t *ErrorTracker) startRedirectConsumer(ctx context.Context, topic string) error {
-	redirectCfg := *t.cfg
-	redirectCfg.GroupID = t.cfg.GroupID + "-redirect"
-
-	redirectConsumer, err := t.consumerFactory.NewConsumer(redirectCfg.GroupID)
-	if err != nil {
-		return err
-	}
-
-	go func() {
-		t.errors <- redirectConsumer.Consume(ctx, []string{t.redirectTopic(topic)}, &RedirectHandler{t: t})
-	}()
-
-	return nil
-}
-
 // StartRetryWorker starts a background consumer for the retry topic.
 // This worker automatically handles backoff delays, retries, and lifecycle management (Redirect/Free).
 // It implements the Bulkhead Pattern, keeping retry processing separate from the main consumer.
 func (t *ErrorTracker) StartRetryWorker(ctx context.Context, topic string, handler ConsumerHandler) error {
+	// ensure retry/dlq topics exist
+	if err := t.ensureTopicsExist(ctx, topic); err != nil {
+		return err
+	}
+
 	retryTopic := t.retryTopic(topic)
 	retryConsumerGroup := t.cfg.GroupID + "-retry"
 
@@ -322,8 +150,6 @@ func (t *ErrorTracker) StartRetryWorker(ctx context.Context, topic string, handl
 
 	go func() {
 		defer retryConsumer.Close()
-		// We ignore the error here as it's typically just context cancellation
-		// Real errors are logged by the consumer adapter or should be handled by a more robust supervisor
 		_ = retryConsumer.Consume(ctx, []string{retryTopic}, workerHandler)
 	}()
 
@@ -359,6 +185,27 @@ func (h *retryWorkerHandler) Handle(ctx context.Context, msg Message) error {
 	return h.t.Free(ctx, msg)
 }
 
+func (t *ErrorTracker) Errors() <-chan error {
+	return t.errors
+}
+
+// GetRetryTopic returns the retry topic name for a given primary topic.
+func (t *ErrorTracker) GetRetryTopic(topic string) string {
+	return t.retryTopic(topic)
+}
+
+// GetDLQTopic returns the DLQ topic name for a given primary topic.
+func (t *ErrorTracker) GetDLQTopic(topic string) string {
+	return t.dlqTopic(topic)
+}
+
+// IsInRetryChain checks if a message is already in the retry chain.
+// Returns true if the message key is currently being tracked for retries.
+func (t *ErrorTracker) IsInRetryChain(msg Message) bool {
+	internalMsg := t.toInternalMessage(msg)
+	return t.coordinator.IsLocked(context.Background(), internalMsg)
+}
+
 // NewResilientHandler wraps a user handler with resilience logic for the MAIN topic.
 // It automatically handles strict ordering checks and error redirection.
 // Usage: mainConsumer.Consume(ctx, topics, tracker.NewResilientHandler(myHandler))
@@ -383,50 +230,18 @@ func (t *ErrorTracker) NewResilientHandler(handler ConsumerHandler) ConsumerHand
 	})
 }
 
-func (t *ErrorTracker) Errors() <-chan error {
-	return t.errors
-}
-
-// GetRetryTopic returns the retry topic name for a given primary topic.
-func (t *ErrorTracker) GetRetryTopic(topic string) string {
-	return t.retryTopic(topic)
-}
-
-// GetRedirectTopic returns the redirect topic name for a given primary topic.
-func (t *ErrorTracker) GetRedirectTopic(topic string) string {
-	return t.redirectTopic(topic)
-}
-
-// GetDLQTopic returns the DLQ topic name for a given primary topic.
-func (t *ErrorTracker) GetDLQTopic(topic string) string {
-	return t.dlqTopic(topic)
-}
-
-// IsInRetryChain checks if a message is already in the retry chain.
-// Returns true if the message key is currently being tracked for retries.
-func (t *ErrorTracker) IsInRetryChain(msg Message) bool {
-	internalMsg := t.toInternalMessage(msg)
-	return t.chainTracker.IsRelated(context.Background(), internalMsg)
-}
-
 // Redirect sends a failed message to the retry topic for reprocessing.
 // This is the primary public API for standalone ErrorTracker usage.
 func (t *ErrorTracker) Redirect(ctx context.Context, msg Message, lastError error) error {
 	internalMsg := t.toInternalMessage(msg)
-
-	// We used to check t.chainTracker.IsRelated here and skip redirect if true.
-	// However, that caused data loss because the message was marked as "handled" but not persisted anywhere.
-	// We MUST persist the message to the retry topic to maintain the queue/order.
-	// The redirect topic (lock) update is idempotent.
-
 	return t.redirectMessageWithError(ctx, internalMsg, lastError)
 }
 
 // Free removes a successfully processed message from the retry chain.
-// Publishes a tombstone to the redirect topic to release the message key.
+// Releases the lock via the coordinator.
 func (t *ErrorTracker) Free(ctx context.Context, msg Message) error {
 	internalMsg := t.toInternalMessage(msg)
-	return t.freeMessage(ctx, internalMsg)
+	return t.coordinator.Release(ctx, internalMsg)
 }
 
 // toInternalMessage converts a Message interface to internal InternalMessage type.
@@ -490,13 +305,14 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 	)
 
 	// Sequential publish with compensating rollback to ensure atomicity.
-	// We publish to redirect topic (lock) first, then to retry topic.
-	if err := t.publishToRedirect(ctx, msg, key, originalTopic); err != nil {
-		return fmt.Errorf("failed to publish lock to redirect topic (topic=%s, key=%s): %w", originalTopic, key, err)
+	// 1. Acquire Lock (Coordinator)
+	if err := t.coordinator.Acquire(ctx, msg, originalTopic); err != nil {
+		return fmt.Errorf("failed to acquire lock (topic=%s, key=%s): %w", originalTopic, key, err)
 	}
 
+	// 2. Publish to Retry Topic
 	if err := t.publishToRetry(ctx, msg, key, nextAttempt, nextRetryTime, originalTime, lastError, originalTopic); err != nil {
-		t.logger.Error("failed to publish to retry topic, attempting rollback of redirect lock",
+		t.logger.Error("failed to publish to retry topic, attempting rollback of lock",
 			"topic", originalTopic,
 			"key", key,
 			"error", err,
@@ -506,7 +322,7 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 		// We retry this critical operation to avoid leaving a "Zombie Key" (locked forever).
 		rollbackErr := retry.Do(
 			func() error {
-				return t.freeMessage(ctx, msg)
+				return t.coordinator.Release(ctx, msg)
 			},
 			retry.Attempts(3),
 			retry.Delay(200*time.Millisecond),
@@ -514,7 +330,7 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 		)
 
 		if rollbackErr != nil {
-			t.logger.Error("CRITICAL: failed to rollback redirect lock after retry publish failure. Key may be permanently locked!",
+			t.logger.Error("CRITICAL: failed to rollback lock after retry publish failure. Key may be permanently locked!",
 				"topic", originalTopic,
 				"key", key,
 				"original_error", err,
@@ -573,113 +389,6 @@ func (t *ErrorTracker) publishToRetry(
 	return t.producer.Produce(ctx, retryMsg.Topic(), retryMsg)
 }
 
-func (t *ErrorTracker) publishToRedirect(ctx context.Context, msg *InternalMessage, id string, originalTopic string) error {
-	headers := HeaderList{
-		{
-			Key:   []byte(HeaderTopic),
-			Value: []byte(originalTopic),
-		},
-		{
-			Key:   []byte("key"),
-			Value: msg.Key,
-		},
-	}
-
-	redirectMsg := &messageWrapper{
-		topic:     t.redirectTopic(originalTopic),
-		key:       []byte(id),
-		value:     []byte(id),
-		headers:   &headerListWrapper{headers: headers},
-		timestamp: time.Now(),
-	}
-
-	return t.producer.Produce(ctx, redirectMsg.Topic(), redirectMsg)
-}
-
-// freeMessage is the internal InternalMessage-based free implementation.
-func (t *ErrorTracker) freeMessage(ctx context.Context, msg *InternalMessage) error {
-	id, ok := GetHeaderValue[string](&msg.Headers, headerID)
-	if !ok {
-		// fallback to key if ID header is missing (e.g. freeing original message)
-		id = string(msg.Key)
-	}
-
-	topic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
-	if !ok {
-		// fallback to message topic if header is missing
-		topic = msg.topic
-	}
-
-	headers := HeaderList{
-		{
-			Key:   []byte(HeaderTopic),
-			Value: []byte(topic),
-		},
-		{
-			Key:   []byte(headerKey),
-			Value: msg.Key,
-		},
-	}
-
-	tombstoneMsg := &messageWrapper{
-		topic:     t.redirectTopic(topic),
-		key:       []byte(id),
-		value:     nil, // Tombstone
-		headers:   &headerListWrapper{headers: headers},
-		timestamp: time.Now(),
-	}
-
-	return t.producer.Produce(ctx, tombstoneMsg.Topic(), tombstoneMsg)
-}
-
-func (t *ErrorTracker) processRedirectMessage(ctx context.Context, msg Message) error {
-	if msg.Value() == nil {
-		return t.ReleaseMessage(ctx, t.toInternalMessage(msg))
-	}
-
-	// Extract original topic and key from headers
-	originalTopicBytes, ok := msg.Headers().Get(HeaderTopic)
-	if !ok {
-		return errors.New("redirect message missing topic header")
-	}
-
-	originalKeyBytes, ok := msg.Headers().Get(headerKey)
-	if !ok {
-		return errors.New("redirect message missing key header")
-	}
-
-	// Reconstruct original message to restore to chainTracker
-	originalMsg := &InternalMessage{
-		topic: string(originalTopicBytes),
-		Key:   originalKeyBytes,
-	}
-
-	// Restore to chainTracker's tracking state
-	_, err := t.chainTracker.AddMessage(ctx, originalMsg)
-	return err
-}
-
-func (t *ErrorTracker) ReleaseMessage(ctx context.Context, msg *InternalMessage) error {
-	topic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
-	if !ok {
-		return errors.New("topic header not found")
-	}
-
-	key, ok := GetHeaderValue[string](&msg.Headers, headerKey)
-	if !ok {
-		return errors.New("key header not found")
-	}
-
-	if err := t.chainTracker.ReleaseMessage(ctx, &InternalMessage{
-		Key:   []byte(key),
-		topic: topic,
-	}); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // SendToDLQ sends a message that has exceeded max retries to the Dead Letter Queue.
 func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg *InternalMessage, lastError error) error {
 	// Get original topic from headers
@@ -735,10 +444,6 @@ func (t *ErrorTracker) retryTopic(topic string) string {
 	return t.cfg.RetryTopicPrefix + "_" + topic
 }
 
-func (t *ErrorTracker) redirectTopic(topic string) string {
-	return t.cfg.RedirectTopicPrefix + "_" + topic
-}
-
 func (t *ErrorTracker) dlqTopic(topic string) string {
 	return t.cfg.DLQTopicPrefix + "_" + topic
 }
@@ -770,8 +475,8 @@ func (t *ErrorTracker) HandleMaxRetriesExceeded(ctx context.Context, message *In
 
 	// conditionally free from tracking based on config
 	if t.cfg.FreeOnDLQ {
-		if err := t.freeMessage(ctx, message); err != nil {
-			t.logger.Error("failed to publish tombstone after DLQ",
+		if err := t.coordinator.Release(ctx, message); err != nil {
+			t.logger.Error("failed to release lock after DLQ",
 				"topic", message.topic,
 				"error", err,
 			)
@@ -779,7 +484,7 @@ func (t *ErrorTracker) HandleMaxRetriesExceeded(ctx context.Context, message *In
 			return fmt.Errorf("failed to free message after DLQ: %w", err)
 		}
 
-		t.logger.Debug("successfully sent to DLQ and freed from tracking",
+		t.logger.Debug("successfully sent to DLQ and released lock",
 			"topic", message.topic,
 			"free_on_dlq", t.cfg.FreeOnDLQ,
 		)
@@ -911,34 +616,6 @@ func (h *headerListWrapper) Clone() Headers {
 	}
 
 	return &headerListWrapper{headers: cloned}
-}
-
-// Handler types for internal consumers
-
-type redirectFillHandler struct {
-	t                *ErrorTracker
-	lastActivity     *int64
-	messagesRestored *int64
-}
-
-func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
-	// Update last activity
-	atomic.StoreInt64(r.lastActivity, time.Now().UnixNano())
-	atomic.AddInt64(r.messagesRestored, 1)
-
-	return r.t.processRedirectMessage(ctx, msg)
-}
-
-type RedirectHandler struct {
-	t *ErrorTracker
-}
-
-func NewRedirectHandler(t *ErrorTracker) *RedirectHandler {
-	return &RedirectHandler{t: t}
-}
-
-func (r *RedirectHandler) Handle(ctx context.Context, msg Message) error {
-	return r.t.processRedirectMessage(ctx, msg)
 }
 
 // RetriableError wraps an error to indicate if it should be retried.
