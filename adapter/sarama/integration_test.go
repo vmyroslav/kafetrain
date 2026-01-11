@@ -636,6 +636,8 @@ func TestIntegration_ChainRetry(t *testing.T) {
 
 	// Wait for processing to complete (3 attempts total)
 	assert.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
 		return attempts.Load() == 3 && success
 	}, 30*time.Second, 500*time.Millisecond, "message should be processed after 3 attempts")
 

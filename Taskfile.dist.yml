@@ -38,7 +38,7 @@ tasks:
       - Requires Docker daemon running
       - Always runs fresh (cache disabled with -count=1)
     cmds:
-      - go test -race -v -count=1 -tags=integration ./tests/integration
+      - cd adapter/sarama && go test -race -v -count=1 -tags=integration .
 
   test:
     desc: Run all tests (unit + integration)

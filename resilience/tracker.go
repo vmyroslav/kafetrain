@@ -192,6 +192,21 @@ func (t *ErrorTracker) GetRetryTopic(topic string) string {
 	return t.retryTopic(topic)
 }
 
+// GetRedirectTopic returns the redirect topic name for a given primary topic.
+func (t *ErrorTracker) GetRedirectTopic(topic string) string {
+	return t.redirectTopic(topic)
+}
+
+// StartTracking starts the coordination layer (control plane) for the topic.
+// This is required for Redirect/Free/IsInRetryChain to work.
+func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
+	// ensure topics exist
+	if err := t.ensureTopicsExist(ctx, topic); err != nil {
+		return err
+	}
+	return t.coordinator.Start(ctx, topic)
+}
+
 // GetDLQTopic returns the DLQ topic name for a given primary topic.
 func (t *ErrorTracker) GetDLQTopic(topic string) string {
 	return t.dlqTopic(topic)
@@ -440,6 +455,10 @@ func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg *InternalMessage, last
 
 func (t *ErrorTracker) retryTopic(topic string) string {
 	return t.cfg.RetryTopicPrefix + "_" + topic
+}
+
+func (t *ErrorTracker) redirectTopic(topic string) string {
+	return t.cfg.RedirectTopicPrefix + "_" + topic
 }
 
 func (t *ErrorTracker) dlqTopic(topic string) string {
