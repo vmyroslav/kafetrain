@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,9 +27,9 @@ type StateCoordinator interface {
 }
 
 // KafkaStateCoordinator implements StateCoordinator using a compacted Kafka topic and local memory.
+// It decorates LocalStateCoordinator to add distributed synchronization.
 type KafkaStateCoordinator struct {
-	lm              lockMap
-	mu              sync.RWMutex
+	local           *LocalStateCoordinator
 	producer        Producer
 	consumerFactory ConsumerFactory
 	admin           Admin
@@ -49,7 +48,7 @@ func NewKafkaStateCoordinator(
 	errCh chan<- error,
 ) *KafkaStateCoordinator {
 	return &KafkaStateCoordinator{
-		lm:              make(lockMap),
+		local:           NewLocalStateCoordinator(),
 		producer:        producer,
 		consumerFactory: consumerFactory,
 		admin:           admin,
@@ -60,14 +59,8 @@ func NewKafkaStateCoordinator(
 	}
 }
 
-func (k *KafkaStateCoordinator) IsLocked(_ context.Context, msg *InternalMessage) bool {
-	k.mu.RLock()
-	defer k.mu.RUnlock()
-
-	// if key for this topic has a reference count > 0, then message is related
-	count, exists := k.lm.getRefCount(msg.topic, string(msg.Key))
-
-	return exists && count > 0
+func (k *KafkaStateCoordinator) IsLocked(ctx context.Context, msg *InternalMessage) bool {
+	return k.local.IsLocked(ctx, msg)
 }
 
 func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
@@ -93,8 +86,9 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 	}
 
 	// optimistic locking: update local state immediately
-	key := string(msg.Key)
-	k.acquireLocal(originalTopic, key)
+	if err := k.local.Acquire(ctx, msg, originalTopic); err != nil {
+		return err
+	}
 
 	headers := HeaderList{
 		{
@@ -142,7 +136,7 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 
 	if err != nil {
 		// rollback local state on failure
-		k.releaseLocal(originalTopic, key)
+		_ = k.local.Release(ctx, msg)
 
 		return fmt.Errorf("failed to produce acquire message: %w", err)
 	}
@@ -161,9 +155,10 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 		topic = msg.topic
 	}
 
-	// Optimistic release: Update local state immediately
-	key := string(msg.Key)
-	k.releaseLocal(topic, key)
+	// optimistic release: update local state immediately
+	if err := k.local.Release(ctx, msg); err != nil {
+		return err
+	}
 
 	headers := HeaderList{
 		{
@@ -211,7 +206,7 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 
 	if err != nil {
 		// rollback local state on failure
-		k.acquireLocal(topic, key)
+		_ = k.local.Acquire(ctx, msg, topic)
 
 		return fmt.Errorf("failed to produce release message: %w", err)
 	}
@@ -319,7 +314,7 @@ func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg 
 	}
 
 	if msg.Value() == nil {
-		return k.ReleaseMessage(ctx, k.toInternalMessage(msg))
+		return k.releaseMessage(ctx, NewFromMessage(msg))
 	}
 
 	originalTopicBytes, ok := msg.Headers().Get(HeaderTopic)
@@ -336,93 +331,22 @@ func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg 
 		Key:   originalKeyBytes,
 	}
 
-	_, err := k.addMessage(ctx, originalMsg)
-
-	return err
+	// Delegate to local coordinator
+	return k.local.Acquire(ctx, originalMsg, originalMsg.topic)
 }
 
-func (k *KafkaStateCoordinator) addMessage(_ context.Context, msg *InternalMessage) (string, error) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-
-	key := string(msg.Key)
-
-	// increment reference count for this key
-	k.lm.incrementRef(msg.topic, key)
-
-	return key, nil
-}
-
-func (k *KafkaStateCoordinator) acquireLocal(topic, key string) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	k.lm.incrementRef(topic, key)
-}
-
-func (k *KafkaStateCoordinator) ReleaseMessage(ctx context.Context, msg *InternalMessage) error {
-	topic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
-	if !ok {
+// releaseMessage releases a lock based on a received message.
+// This is used when processing tombstones from other coordinators.
+func (k *KafkaStateCoordinator) releaseMessage(ctx context.Context, msg *InternalMessage) error {
+	if _, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic); !ok {
 		return errors.New("topic header not found")
 	}
-	key, ok := GetHeaderValue[string](&msg.Headers, headerKey)
-	if !ok {
+	if _, ok := GetHeaderValue[string](&msg.Headers, headerKey); !ok {
 		return errors.New("key header not found")
 	}
 
-	k.mu.Lock()
-	defer k.mu.Unlock()
-
-	// decrement reference count
-	newCount, exists := k.lm.decrementRef(topic, key)
-
-	// key wasn't tracked, this is idempotent
-	if !exists {
-		return nil
-	}
-
-	// remove key when count reaches 0
-	if newCount <= 0 {
-		k.lm.removeKey(topic, key)
-	}
-
-	// clean up topic map if empty
-	if k.lm.isTopicEmpty(topic) {
-		k.lm.removeTopic(topic)
-	}
-
-	return nil
-}
-
-func (k *KafkaStateCoordinator) releaseLocal(topic, key string) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-
-	newCount, exists := k.lm.decrementRef(topic, key)
-	if !exists {
-		return
-	}
-	if newCount <= 0 {
-		k.lm.removeKey(topic, key)
-	}
-	if k.lm.isTopicEmpty(topic) {
-		k.lm.removeTopic(topic)
-	}
-}
-
-func (k *KafkaStateCoordinator) toInternalMessage(msg Message) *InternalMessage {
-	headers := make(HeaderList, 0)
-	for key, value := range msg.Headers().All() {
-		headers = append(headers, Header{Key: []byte(key), Value: value})
-	}
-	return &InternalMessage{
-		topic:     msg.Topic(),
-		partition: msg.Partition(),
-		offset:    msg.Offset(),
-		Key:       msg.Key(),
-		Payload:   msg.Value(),
-		Headers:   headers,
-		Timestamp: msg.Timestamp(),
-	}
+	// delegate to local coordinator
+	return k.local.Release(ctx, msg)
 }
 
 func (k *KafkaStateCoordinator) redirectTopic(topic string) string {
@@ -445,77 +369,4 @@ type RedirectHandler struct {
 
 func (r *RedirectHandler) Handle(ctx context.Context, msg Message) error {
 	return r.k.processRedirectMessage(ctx, msg)
-}
-
-// topic map ['topic-name' => ['topic-key' => refCount]].
-// Reference counting ensures keys are unlocked only when all messages with that key complete.
-type lockMap map[string]map[string]int
-
-// getRefCount returns the reference count for a topic/key pair.
-// Returns (count, exists) - exists is false if topic or key doesn't exist.
-func (lm lockMap) getRefCount(topic, key string) (int, bool) {
-	if lm[topic] == nil {
-		return 0, false
-	}
-
-	count, ok := lm[topic][key]
-
-	return count, ok
-}
-
-// incrementRef increments the reference count for a topic/key pair
-func (lm lockMap) incrementRef(topic, key string) int {
-	if lm[topic] == nil {
-		lm[topic] = make(map[string]int)
-	}
-
-	lm[topic][key]++
-
-	return lm[topic][key]
-}
-
-// decrementRef decrements the reference count for a topic/key pair.
-// Returns the new reference count and whether the key existed.
-func (lm lockMap) decrementRef(topic, key string) (int, bool) {
-	if lm[topic] == nil {
-		return 0, false
-	}
-
-	if _, ok := lm[topic][key]; !ok {
-		return 0, false
-	}
-
-	lm[topic][key]--
-
-	return lm[topic][key], true
-}
-
-// removeKey removes a key from a topic
-func (lm lockMap) removeKey(topic, key string) {
-	if lm[topic] == nil {
-		return
-	}
-
-	delete(lm[topic], key)
-}
-
-// removeTopic removes an entire topic and all its keys.
-func (lm lockMap) removeTopic(topic string) {
-	delete(lm, topic)
-}
-
-// isTopicEmpty returns true if topic has no keys or doesn't exist.
-func (lm lockMap) isTopicEmpty(topic string) bool {
-	return len(lm[topic]) == 0
-}
-
-// hasKey returns true if the topic/key pair exists (regardless of count value).
-func (lm lockMap) hasKey(topic, key string) bool {
-	if lm[topic] == nil {
-		return false
-	}
-
-	_, ok := lm[topic][key]
-
-	return ok
 }

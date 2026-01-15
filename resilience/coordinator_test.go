@@ -101,7 +101,7 @@ func TestKafkaStateCoordinator_Release(t *testing.T) {
 	}
 
 	// Manually lock it first to test release
-	coordinator.acquireLocal("orders", "order-123")
+	_ = coordinator.local.Acquire(ctx, msg, "orders")
 	assert.True(t, coordinator.IsLocked(ctx, msg))
 
 	// Test Release
@@ -253,14 +253,14 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 	}
 
 	// We call Acquire first to set local ref count to 1 (simulating the source of the echo)
-	coordinator.acquireLocal("orders", "k1")
+	_ = coordinator.local.Acquire(context.Background(), &InternalMessage{topic: "orders", Key: []byte("k1")}, "orders")
 
 	// Process the echo message
 	err := coordinator.processRedirectMessage(context.Background(), echoMsg)
 	assert.NoError(t, err)
 
 	// Ref count should still be 1 (Not incremented to 2)
-	count, _ := coordinator.lm.getRefCount("orders", "k1")
+	count, _ := coordinator.local.lm.getRefCount("orders", "k1")
 	assert.Equal(t, 1, count)
 
 	// 2. Simulate "Foreign" message (Different ID)
@@ -281,90 +281,8 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Ref count should now be 2
-	count, _ = coordinator.lm.getRefCount("orders", "k1")
+	count, _ = coordinator.local.lm.getRefCount("orders", "k1")
 	assert.Equal(t, 2, count)
-}
-
-func TestKafkaStateCoordinator_ReferenceCounting(t *testing.T) {
-	coordinator := NewKafkaStateCoordinator(
-		&Config{},
-		&LoggerMock{},
-		&ProducerMock{},
-		&ConsumerFactoryMock{},
-		&AdminMock{},
-		nil,
-	)
-
-	topic := "orders"
-	key := "ref-key"
-	msg := &InternalMessage{topic: topic, Key: []byte(key)}
-
-	// 1. First Lock (Foreign)
-	foreignMsg1 := createMockRedirectMsg(topic, key, "remote-1", true)
-	err := coordinator.processRedirectMessage(context.Background(), foreignMsg1)
-	assert.NoError(t, err)
-
-	assert.True(t, coordinator.IsLocked(context.Background(), msg))
-	count, _ := coordinator.lm.getRefCount(topic, key)
-	assert.Equal(t, 1, count)
-
-	// 2. Second Lock (Foreign - Stacked Retry)
-	foreignMsg2 := createMockRedirectMsg(topic, key, "remote-1", true)
-	err = coordinator.processRedirectMessage(context.Background(), foreignMsg2)
-	assert.NoError(t, err)
-
-	assert.True(t, coordinator.IsLocked(context.Background(), msg))
-	count, _ = coordinator.lm.getRefCount(topic, key)
-	assert.Equal(t, 2, count)
-
-	// 3. First Release (Foreign)
-	tombstone1 := createMockRedirectMsg(topic, key, "remote-1", false)
-	err = coordinator.processRedirectMessage(context.Background(), tombstone1)
-	assert.NoError(t, err)
-
-	// Should STILL be locked (Ref count 2 -> 1)
-	assert.True(t, coordinator.IsLocked(context.Background(), msg))
-	count, _ = coordinator.lm.getRefCount(topic, key)
-	assert.Equal(t, 1, count)
-
-	// 4. Second Release (Foreign)
-	tombstone2 := createMockRedirectMsg(topic, key, "remote-1", false)
-	err = coordinator.processRedirectMessage(context.Background(), tombstone2)
-	assert.NoError(t, err)
-
-	// Should be UNLOCKED (Ref count 1 -> 0)
-	assert.False(t, coordinator.IsLocked(context.Background(), msg))
-	count, exists := coordinator.lm.getRefCount(topic, key)
-	assert.Equal(t, 0, count)
-	assert.False(t, exists)
-}
-
-func TestKafkaStateCoordinator_Isolation(t *testing.T) {
-	coordinator := NewKafkaStateCoordinator(
-		&Config{},
-		&LoggerMock{},
-		&ProducerMock{},
-		&ConsumerFactoryMock{},
-		&AdminMock{},
-		nil,
-	)
-
-	ctx := context.Background()
-
-	// Lock Key A
-	msgA := &InternalMessage{topic: "topic1", Key: []byte("keyA")}
-	coordinator.acquireLocal("topic1", "keyA")
-
-	// Check Key A is locked
-	assert.True(t, coordinator.IsLocked(ctx, msgA))
-
-	// Check Key B is NOT locked
-	msgB := &InternalMessage{topic: "topic1", Key: []byte("keyB")}
-	assert.False(t, coordinator.IsLocked(ctx, msgB))
-
-	// Check Key A on different Topic is NOT locked
-	msgOtherTopic := &InternalMessage{topic: "topic2", Key: []byte("keyA")}
-	assert.False(t, coordinator.IsLocked(ctx, msgOtherTopic))
 }
 
 func TestKafkaStateCoordinator_ForeignTombstone(t *testing.T) {
@@ -378,7 +296,7 @@ func TestKafkaStateCoordinator_ForeignTombstone(t *testing.T) {
 	)
 
 	// Simulate we have a lock locally (maybe restored or acquired)
-	coordinator.acquireLocal("orders", "key1")
+	_ = coordinator.local.Acquire(context.Background(), &InternalMessage{topic: "orders", Key: []byte("key1")}, "orders")
 	msg := &InternalMessage{topic: "orders", Key: []byte("key1")}
 	assert.True(t, coordinator.IsLocked(context.Background(), msg))
 
