@@ -242,12 +242,25 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 	cfg.RetryTopicPartitions = 1
 
 	// Create library-agnostic ErrorTracker
+	// Create coordinator
+	errCh := make(chan error, 10)
+	coordinator := resilience.NewKafkaStateCoordinator(
+		cfg,
+		retryLogger,
+		producer,
+		consumerFactory,
+		admin,
+		errCh,
+	)
+
+	// Create library-agnostic ErrorTracker
 	tracker, err := resilience.NewErrorTracker(
 		cfg,
 		retryLogger,
 		producer,
 		consumerFactory,
 		admin,
+		coordinator,
 		nil,
 	)
 	require.NoError(t, err, "failed to create error tracker")
@@ -552,12 +565,25 @@ func TestIntegration_ChainRetry(t *testing.T) {
 	cfg.RetryTopicPartitions = 1
 
 	// Create ErrorTracker
+	// Create coordinator
+	errCh := make(chan error, 10)
+	coordinator := resilience.NewKafkaStateCoordinator(
+		cfg,
+		retryLogger,
+		producer,
+		consumerFactory,
+		admin,
+		errCh,
+	)
+
+	// Create library-agnostic ErrorTracker
 	tracker, err := resilience.NewErrorTracker(
 		cfg,
 		retryLogger,
 		producer,
 		consumerFactory,
 		admin,
+		coordinator,
 		nil,
 	)
 	require.NoError(t, err, "failed to create error tracker")
@@ -779,12 +805,25 @@ func TestIntegration_DLQ(t *testing.T) {
 	cfg.FreeOnDLQ = false // Message stays in tracking after DLQ
 
 	// Create ErrorTracker
+	// Create coordinator
+	errCh := make(chan error, 10)
+	coordinator := resilience.NewKafkaStateCoordinator(
+		cfg,
+		retryLogger,
+		producer,
+		consumerFactory,
+		admin,
+		errCh,
+	)
+
+	// Create library-agnostic ErrorTracker
 	tracker, err := resilience.NewErrorTracker(
 		cfg,
 		retryLogger,
 		producer,
 		consumerFactory,
 		admin,
+		coordinator,
 		nil,
 	)
 	require.NoError(t, err, "failed to create error tracker")
@@ -1078,12 +1117,25 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 	cfg.FreeOnDLQ = true // FREE message from tracking after DLQ
 
 	// Create ErrorTracker
+	// Create coordinator
+	errCh := make(chan error, 10)
+	coordinator := resilience.NewKafkaStateCoordinator(
+		cfg,
+		retryLogger,
+		producer,
+		consumerFactory,
+		admin,
+		errCh,
+	)
+
+	// Create library-agnostic ErrorTracker
 	tracker, err := resilience.NewErrorTracker(
 		cfg,
 		retryLogger,
 		producer,
 		consumerFactory,
 		admin,
+		coordinator,
 		nil,
 	)
 	require.NoError(t, err, "failed to create error tracker")

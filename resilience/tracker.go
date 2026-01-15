@@ -11,8 +11,7 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// ErrorTracker is the library-agnostic core retry tracking implementation.
-// It uses interfaces to remain independent of any specific Kafka library.
+// ErrorTracker is the library-agnostic retry tracking implementation.
 type ErrorTracker struct {
 	coordinator     StateCoordinator
 	backoff         BackoffStrategy
@@ -20,35 +19,22 @@ type ErrorTracker struct {
 	producer        Producer
 	consumerFactory ConsumerFactory
 	admin           Admin
-	errors          chan error
 	cfg             *Config
 }
 
-// NewErrorTracker creates a new ErrorTracker using library-agnostic interfaces.
-// This is the core constructor that works with any Kafka library via adapters.
+// NewErrorTracker creates a new ErrorTracker.
 func NewErrorTracker(
 	cfg *Config,
 	logger Logger,
 	producer Producer,
 	consumerFactory ConsumerFactory,
 	admin Admin,
+	coordinator StateCoordinator,
 	backoff BackoffStrategy,
 ) (*ErrorTracker, error) {
 	if backoff == nil {
 		backoff = NewExponentialBackoff()
 	}
-
-	errCh := make(chan error, 256)
-
-	// Default to Kafka-based coordination
-	coordinator := NewKafkaStateCoordinator(
-		cfg,
-		logger,
-		producer,
-		consumerFactory,
-		admin,
-		errCh,
-	)
 
 	t := ErrorTracker{
 		cfg:             cfg,
@@ -58,7 +44,6 @@ func NewErrorTracker(
 		admin:           admin,
 		coordinator:     coordinator,
 		backoff:         backoff,
-		errors:          errCh,
 	}
 
 	return &t, nil
@@ -185,10 +170,6 @@ func (h *retryWorkerHandler) Handle(ctx context.Context, msg Message) error {
 
 	// Success -> Free the lock
 	return h.t.Free(ctx, msg)
-}
-
-func (t *ErrorTracker) Errors() <-chan error {
-	return t.errors
 }
 
 // GetRetryTopic returns the retry topic name for a given primary topic.
