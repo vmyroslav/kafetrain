@@ -80,9 +80,9 @@ func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 
 // Acquire locks the key for the given message.
 func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error {
-	id, ok := GetHeaderValue[string](&msg.Headers, headerID)
+	id, ok := GetHeaderValue[string](&msg.HeaderData, headerID)
 	if !ok {
-		id = string(msg.Key)
+		id = string(msg.KeyData)
 	}
 
 	// optimistic locking: update local state immediately
@@ -97,7 +97,7 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 		},
 		{
 			Key:   []byte("key"),
-			Value: msg.Key,
+			Value: msg.KeyData,
 		},
 		{
 			Key:   []byte(HeaderCoordinatorID),
@@ -105,12 +105,12 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 		},
 	}
 
-	redirectMsg := &messageWrapper{
-		topic:     k.redirectTopic(originalTopic),
-		key:       []byte(id),
-		value:     []byte(id),
-		headers:   &headerListWrapper{headers: headers},
-		timestamp: time.Now(),
+	redirectMsg := &InternalMessage{
+		topic:         k.redirectTopic(originalTopic),
+		KeyData:       []byte(id),
+		Payload:       []byte(id),
+		HeaderData:    headers,
+		TimestampData: time.Now(),
 	}
 
 	err := retry.Do(
@@ -133,7 +133,6 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 			)
 		}),
 	)
-
 	if err != nil {
 		// rollback local state on failure
 		_ = k.local.Release(ctx, msg)
@@ -145,12 +144,12 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 }
 
 func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessage) error {
-	id, ok := GetHeaderValue[string](&msg.Headers, headerID)
+	id, ok := GetHeaderValue[string](&msg.HeaderData, headerID)
 	if !ok {
-		id = string(msg.Key)
+		id = string(msg.KeyData)
 	}
 
-	topic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
+	topic, ok := GetHeaderValue[string](&msg.HeaderData, HeaderTopic)
 	if !ok {
 		topic = msg.topic
 	}
@@ -167,7 +166,7 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 		},
 		{
 			Key:   []byte(headerKey),
-			Value: msg.Key,
+			Value: msg.KeyData,
 		},
 		{
 			Key:   []byte(HeaderCoordinatorID),
@@ -175,12 +174,12 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 		},
 	}
 
-	tombstoneMsg := &messageWrapper{
-		topic:     k.redirectTopic(topic),
-		key:       []byte(id),
-		value:     nil, // Tombstone
-		headers:   &headerListWrapper{headers: headers},
-		timestamp: time.Now(),
+	tombstoneMsg := &InternalMessage{
+		topic:         k.redirectTopic(topic),
+		KeyData:       []byte(id),
+		Payload:       nil, // Tombstone
+		HeaderData:    headers,
+		TimestampData: time.Now(),
 	}
 
 	err := retry.Do(
@@ -203,7 +202,6 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 			)
 		}),
 	)
-
 	if err != nil {
 		// rollback local state on failure
 		_ = k.local.Acquire(ctx, msg, topic)
@@ -221,6 +219,7 @@ func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic s
 		if err != nil {
 			return fmt.Errorf("failed to describe primary topic '%s': %w", topic, err)
 		}
+
 		if len(metadata) > 0 {
 			partitions = metadata[0].Partitions()
 		}
@@ -245,6 +244,7 @@ func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) 
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
+
 	refillCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -264,6 +264,7 @@ func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) 
 	go func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
+
 		for {
 			select {
 			case <-refillCtx.Done():
@@ -321,14 +322,15 @@ func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg 
 	if !ok {
 		return errors.New("redirect message missing topic header")
 	}
+
 	originalKeyBytes, ok := msg.Headers().Get(headerKey)
 	if !ok {
 		return errors.New("redirect message missing key header")
 	}
 
 	originalMsg := &InternalMessage{
-		topic: string(originalTopicBytes),
-		Key:   originalKeyBytes,
+		topic:   string(originalTopicBytes),
+		KeyData: originalKeyBytes,
 	}
 
 	// Delegate to local coordinator
@@ -338,10 +340,11 @@ func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg 
 // releaseMessage releases a lock based on a received message.
 // This is used when processing tombstones from other coordinators.
 func (k *KafkaStateCoordinator) releaseMessage(ctx context.Context, msg *InternalMessage) error {
-	if _, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic); !ok {
+	if _, ok := GetHeaderValue[string](&msg.HeaderData, HeaderTopic); !ok {
 		return errors.New("topic header not found")
 	}
-	if _, ok := GetHeaderValue[string](&msg.Headers, headerKey); !ok {
+
+	if _, ok := GetHeaderValue[string](&msg.HeaderData, headerKey); !ok {
 		return errors.New("key header not found")
 	}
 

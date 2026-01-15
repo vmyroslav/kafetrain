@@ -12,7 +12,7 @@ type Producer interface {
 	Produce(ctx context.Context, topic string, msg Message) error
 
 	// ProduceBatch publishes multiple messages atomically
-	//TODO: use it insted of SAGA?
+	// TODO: use it insted of SAGA?
 	ProduceBatch(ctx context.Context, messages []MessageTarget) error
 
 	// Close releases producer resources
@@ -59,10 +59,10 @@ type ConsumerFactory interface {
 // Logger is a minimal logging interface (library-agnostic).
 // Allows kafetrain core to work with any logging library.
 type Logger interface {
-	Debug(msg string, fields ...interface{})
-	Info(msg string, fields ...interface{})
-	Warn(msg string, fields ...interface{})
-	Error(msg string, fields ...interface{})
+	Debug(msg string, fields ...any)
+	Info(msg string, fields ...any)
+	Warn(msg string, fields ...any)
+	Error(msg string, fields ...any)
 }
 
 // Admin performs Kafka cluster administration operations (library-agnostic).

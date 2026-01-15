@@ -966,9 +966,9 @@ func (h *dlqTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim
 			err := h.tracker.SendToDLQ(
 				session.Context(),
 				&resilience.InternalMessage{
-					Key:     msg.Key,
-					Payload: msg.Value,
-					Headers: mapSaramaHeaders(msg.Headers),
+					KeyData:    msg.Key,
+					Payload:    msg.Value,
+					HeaderData: mapSaramaHeaders(msg.Headers),
 				},
 				fmt.Errorf("max retries exceeded"),
 			)
@@ -1247,9 +1247,9 @@ func (h *dlqFreeTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 			err := h.tracker.SendToDLQ(
 				session.Context(),
 				&resilience.InternalMessage{
-					Key:     msg.Key,
-					Payload: msg.Value,
-					Headers: mapSaramaHeaders(msg.Headers),
+					KeyData:    msg.Key,
+					Payload:    msg.Value,
+					HeaderData: mapSaramaHeaders(msg.Headers),
 				},
 				fmt.Errorf("max retries exceeded"),
 			)

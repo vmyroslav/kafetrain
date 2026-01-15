@@ -87,6 +87,7 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 		if err != nil {
 			return fmt.Errorf("failed to describe primary topic '%s' for partition count auto-detection: %w", topic, err)
 		}
+
 		if len(metadata) == 0 {
 			return fmt.Errorf("no metadata found for primary topic '%s' during partition count auto-detection", topic)
 		}
@@ -108,6 +109,7 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 		}); err != nil {
 			return fmt.Errorf("failed to create retry topic: %w", err)
 		}
+
 		return nil
 	})
 
@@ -119,6 +121,7 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 		}); err != nil {
 			return fmt.Errorf("failed to create DLQ topic: %w", err)
 		}
+
 		return nil
 	})
 
@@ -149,6 +152,7 @@ func (t *ErrorTracker) StartRetryWorker(ctx context.Context, topic string, handl
 
 	go func() {
 		defer retryConsumer.Close()
+
 		_ = retryConsumer.Consume(ctx, []string{retryTopic}, workerHandler)
 	}()
 
@@ -173,7 +177,6 @@ func (h *retryWorkerHandler) Handle(ctx context.Context, msg Message) error {
 
 	// 2. Call user's business logic
 	err := h.userHandler.Handle(ctx, msg)
-
 	// 3. Handle result
 	if err != nil {
 		// Failed again -> Redirect (will check max retries internally)
@@ -205,6 +208,7 @@ func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
 	if err := t.ensureTopicsExist(ctx, topic); err != nil {
 		return err
 	}
+
 	return t.coordinator.Start(ctx, topic)
 }
 
@@ -271,33 +275,33 @@ func (t *ErrorTracker) toInternalMessage(msg Message) *InternalMessage {
 	}
 
 	return &InternalMessage{
-		topic:     msg.Topic(),
-		partition: msg.Partition(),
-		offset:    msg.Offset(),
-		Key:       msg.Key(),
-		Payload:   msg.Value(),
-		Headers:   headers,
-		Timestamp: msg.Timestamp(),
+		topic:         msg.Topic(),
+		partition:     msg.Partition(),
+		offset:        msg.Offset(),
+		KeyData:       msg.Key(),
+		Payload:       msg.Value(),
+		HeaderData:    headers,
+		TimestampData: msg.Timestamp(),
 	}
 }
 
 // redirectMessageWithError is the internal InternalMessage-based redirect implementation.
 func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *InternalMessage, lastError error) error {
 	// Calculate retry metadata
-	currentAttempt, _ := GetHeaderValue[int](&msg.Headers, HeaderRetryAttempt)
+	currentAttempt, _ := GetHeaderValue[int](&msg.HeaderData, HeaderRetryAttempt)
 
 	// Check if max retries would be exceeded
 	if currentAttempt >= t.cfg.MaxRetries {
 		return t.HandleMaxRetriesExceeded(ctx, msg, currentAttempt, t.cfg.MaxRetries)
 	}
 
-	originalTime, ok := GetHeaderValue[time.Time](&msg.Headers, HeaderRetryOriginalTime)
+	originalTime, ok := GetHeaderValue[time.Time](&msg.HeaderData, HeaderRetryOriginalTime)
 	if !ok {
 		originalTime = time.Now()
 	}
 
 	// Get the ORIGINAL topic from headers (if this is already a retry message)
-	originalTopic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
+	originalTopic, ok := GetHeaderValue[string](&msg.HeaderData, HeaderTopic)
 	if !ok {
 		// This is the first redirect, use the current topic
 		originalTopic = msg.topic
@@ -307,7 +311,7 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 	nextRetryTime := time.Now().Add(nextDelay)
 	nextAttempt := currentAttempt + 1
 
-	key := string(msg.Key)
+	key := string(msg.KeyData)
 
 	t.logger.Debug("redirecting message to retry topic",
 		"topic", msg.topic,
@@ -343,7 +347,6 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 			retry.Delay(200*time.Millisecond),
 			retry.Context(ctx),
 		)
-
 		if rollbackErr != nil {
 			t.logger.Error("CRITICAL: failed to rollback lock after retry publish failure. Key may be permanently locked!",
 				"topic", originalTopic,
@@ -369,8 +372,8 @@ func (t *ErrorTracker) publishToRetry(
 	lastError error,
 	originalTopic string,
 ) error {
-	retryHeaders := make(HeaderList, 0, len(msg.Headers)+6)
-	for _, h := range msg.Headers {
+	retryHeaders := make(HeaderList, 0, len(msg.HeaderData)+6)
+	for _, h := range msg.HeaderData {
 		key := string(h.Key)
 		if key != HeaderRetryAttempt && key != HeaderRetryMax &&
 			key != HeaderRetryNextTime && key != HeaderRetryOriginalTime &&
@@ -392,13 +395,13 @@ func (t *ErrorTracker) publishToRetry(
 	SetHeader[string](&retryHeaders, headerRetry, "true")
 	SetHeader[string](&retryHeaders, HeaderTopic, originalTopic)
 
-	// Create wrapper that implements Message interface
-	retryMsg := &messageWrapper{
-		topic:     t.retryTopic(originalTopic),
-		key:       msg.Key,
-		value:     msg.Payload,
-		headers:   &headerListWrapper{headers: retryHeaders},
-		timestamp: time.Now(),
+	// Create InternalMessage directly
+	retryMsg := &InternalMessage{
+		topic:         t.retryTopic(originalTopic),
+		KeyData:       msg.KeyData,
+		Payload:       msg.Payload,
+		HeaderData:    retryHeaders,
+		TimestampData: time.Now(),
 	}
 
 	return t.producer.Produce(ctx, retryMsg.Topic(), retryMsg)
@@ -407,18 +410,18 @@ func (t *ErrorTracker) publishToRetry(
 // SendToDLQ sends a message that has exceeded max retries to the Dead Letter Queue.
 func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg *InternalMessage, lastError error) error {
 	// Get original topic from headers
-	originalTopic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
+	originalTopic, ok := GetHeaderValue[string](&msg.HeaderData, HeaderTopic)
 	if !ok {
 		originalTopic = msg.topic
 	}
 
 	// Get retry metadata
-	attempt, _ := GetHeaderValue[int](&msg.Headers, HeaderRetryAttempt)
-	originalTime, _ := GetHeaderValue[time.Time](&msg.Headers, HeaderRetryOriginalTime)
+	attempt, _ := GetHeaderValue[int](&msg.HeaderData, HeaderRetryAttempt)
+	originalTime, _ := GetHeaderValue[time.Time](&msg.HeaderData, HeaderRetryOriginalTime)
 
 	// Copy original message headers (excluding retry headers)
-	dlqHeaders := make(HeaderList, 0, len(msg.Headers)+4)
-	for _, h := range msg.Headers {
+	dlqHeaders := make(HeaderList, 0, len(msg.HeaderData)+4)
+	for _, h := range msg.HeaderData {
 		key := string(h.Key)
 		if key != HeaderRetryAttempt && key != HeaderRetryMax &&
 			key != HeaderRetryNextTime && key != headerID && key != headerRetry {
@@ -436,12 +439,12 @@ func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg *InternalMessage, last
 		SetHeader[time.Time](&dlqHeaders, "x-dlq-original-failure-time", originalTime)
 	}
 
-	dlqMsg := &messageWrapper{
-		topic:     t.dlqTopic(originalTopic),
-		key:       msg.Key,
-		value:     msg.Payload,
-		headers:   &headerListWrapper{headers: dlqHeaders},
-		timestamp: time.Now(),
+	dlqMsg := &InternalMessage{
+		topic:         t.dlqTopic(originalTopic),
+		KeyData:       msg.KeyData,
+		Payload:       msg.Payload,
+		HeaderData:    dlqHeaders,
+		TimestampData: time.Now(),
 	}
 
 	t.logger.Error("sending message to DLQ (max retries exceeded)",
@@ -475,7 +478,7 @@ func (t *ErrorTracker) HandleMaxRetriesExceeded(ctx context.Context, message *In
 	)
 
 	// Get the last error reason from headers
-	lastErrorReason, _ := GetHeaderValue[string](&message.Headers, HeaderRetryReason)
+	lastErrorReason, _ := GetHeaderValue[string](&message.HeaderData, HeaderRetryReason)
 
 	lastError := errors.New(lastErrorReason)
 	if lastErrorReason == "" {
@@ -528,6 +531,7 @@ func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, msg Message) error 
 	}
 
 	nextRetryTime := time.Unix(ts, 0)
+
 	now := time.Now()
 	if !now.Before(nextRetryTime) {
 		return nil
@@ -553,89 +557,6 @@ func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, msg Message) error 
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-// TODO: remove it
-// messageWrapper is an internal wrapper that implements the Message interface.
-// Used for producing messages via the library-agnostic Producer interface.
-type messageWrapper struct {
-	timestamp time.Time
-	headers   Headers
-	topic     string
-	key       []byte
-	value     []byte
-	offset    int64
-	partition int32
-}
-
-func (m *messageWrapper) Topic() string        { return m.topic }
-func (m *messageWrapper) Partition() int32     { return m.partition }
-func (m *messageWrapper) Offset() int64        { return m.offset }
-func (m *messageWrapper) Key() []byte          { return m.key }
-func (m *messageWrapper) Value() []byte        { return m.value }
-func (m *messageWrapper) Headers() Headers     { return m.headers }
-func (m *messageWrapper) Timestamp() time.Time { return m.timestamp }
-
-// headerListWrapper wraps HeaderList to implement the Headers interface.
-type headerListWrapper struct {
-	headers HeaderList
-}
-
-func (h *headerListWrapper) Get(key string) ([]byte, bool) {
-	for _, header := range h.headers {
-		if string(header.Key) == key {
-			return header.Value, true
-		}
-	}
-
-	return nil, false
-}
-
-func (h *headerListWrapper) Set(key string, value []byte) {
-	// Find and update existing header
-	for i, header := range h.headers {
-		if string(header.Key) == key {
-			h.headers[i].Value = value
-			return
-		}
-	}
-	// Add new header if not found
-	h.headers = append(h.headers, Header{
-		Key:   []byte(key),
-		Value: value,
-	})
-}
-
-func (h *headerListWrapper) All() map[string][]byte {
-	result := make(map[string][]byte, len(h.headers))
-	for _, header := range h.headers {
-		result[string(header.Key)] = header.Value
-	}
-
-	return result
-}
-
-func (h *headerListWrapper) Delete(key string) {
-	newHeaders := make(HeaderList, 0, len(h.headers))
-	for _, header := range h.headers {
-		if string(header.Key) != key {
-			newHeaders = append(newHeaders, header)
-		}
-	}
-	h.headers = newHeaders
-}
-
-func (h *headerListWrapper) Clone() Headers {
-	// Deep copy the headers
-	cloned := make(HeaderList, len(h.headers))
-	for i, header := range h.headers {
-		cloned[i] = Header{
-			Key:   append([]byte(nil), header.Key...),
-			Value: append([]byte(nil), header.Value...),
-		}
-	}
-
-	return &headerListWrapper{headers: cloned}
 }
 
 // RetriableError wraps an error to indicate if it should be retried.

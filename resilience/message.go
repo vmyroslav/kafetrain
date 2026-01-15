@@ -62,13 +62,13 @@ type Headers interface {
 
 // InternalMessage is the internal message representation.
 type InternalMessage struct {
-	Timestamp time.Time
-	topic     string
-	Key       []byte
-	Payload   []byte
-	Headers   HeaderList
-	offset    int64
-	partition int32
+	TimestampData time.Time
+	topic         string
+	KeyData       []byte
+	Payload       []byte
+	HeaderData    HeaderList
+	offset        int64
+	partition     int32
 }
 
 func NewFromMessage(msg Message) *InternalMessage {
@@ -78,13 +78,13 @@ func NewFromMessage(msg Message) *InternalMessage {
 	}
 
 	return &InternalMessage{
-		topic:     msg.Topic(),
-		partition: msg.Partition(),
-		offset:    msg.Offset(),
-		Key:       msg.Key(),
-		Payload:   msg.Value(),
-		Headers:   headers,
-		Timestamp: msg.Timestamp(),
+		topic:         msg.Topic(),
+		partition:     msg.Partition(),
+		offset:        msg.Offset(),
+		KeyData:       msg.Key(),
+		Payload:       msg.Value(),
+		HeaderData:    headers,
+		TimestampData: msg.Timestamp(),
 	}
 }
 
@@ -111,6 +111,84 @@ func (m *InternalMessage) Partition() int32 {
 // Value returns the message payload.
 func (m *InternalMessage) Value() []byte {
 	return m.Payload
+}
+
+// Key returns the message key.
+func (m *InternalMessage) Key() []byte {
+	return m.KeyData
+}
+
+// Timestamp returns the message timestamp.
+func (m *InternalMessage) Timestamp() time.Time {
+	return m.TimestampData
+}
+
+// Headers returns the message headers.
+func (m *InternalMessage) Headers() Headers {
+	return &HeadersAdapter{headers: &m.HeaderData}
+}
+
+// HeadersAdapter wraps HeaderList to implement the Headers interface.
+type HeadersAdapter struct {
+	headers *HeaderList
+}
+
+func (h *HeadersAdapter) Get(key string) ([]byte, bool) {
+	for _, header := range *h.headers {
+		if string(header.Key) == key {
+			return header.Value, true
+		}
+	}
+
+	return nil, false
+}
+
+func (h *HeadersAdapter) Set(key string, value []byte) {
+	// Find and update existing header
+	for i, header := range *h.headers {
+		if string(header.Key) == key {
+			(*h.headers)[i].Value = value
+			return
+		}
+	}
+	// Add new header if not found
+	*h.headers = append(*h.headers, Header{
+		Key:   []byte(key),
+		Value: value,
+	})
+}
+
+func (h *HeadersAdapter) All() map[string][]byte {
+	result := make(map[string][]byte, len(*h.headers))
+	for _, header := range *h.headers {
+		result[string(header.Key)] = header.Value
+	}
+
+	return result
+}
+
+func (h *HeadersAdapter) Delete(key string) {
+	newHeaders := make(HeaderList, 0, len(*h.headers))
+	for _, header := range *h.headers {
+		if string(header.Key) != key {
+			newHeaders = append(newHeaders, header)
+		}
+	}
+
+	*h.headers = newHeaders
+}
+
+func (h *HeadersAdapter) Clone() Headers {
+	// Deep copy the headers
+	cloned := make(HeaderList, len(*h.headers))
+	for i, header := range *h.headers {
+		cloned[i] = Header{
+			Key:   append([]byte(nil), header.Key...),
+			Value: append([]byte(nil), header.Value...),
+		}
+	}
+
+	return &HeadersAdapter{headers: &cloned}
 }
 
 type Header struct {
@@ -184,7 +262,7 @@ func SetHeader[T any](h *HeaderList, key string, value T) {
 		valStr = strconv.Itoa(v)
 	case time.Time:
 		valStr = strconv.FormatInt(v.Unix(), 10)
-		//TODO: don't panic here, return error instead
+		// TODO: don't panic here, return error instead
 	default:
 		panic(fmt.Sprintf("SetHeader: unsupported type %T (use string, int, or time.Time)", value))
 	}

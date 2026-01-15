@@ -46,8 +46,7 @@ type ProducerMock struct {
 	// calls tracks calls to the methods.
 	calls struct {
 		// Close holds details about calls to the Close method.
-		Close []struct {
-		}
+		Close []struct{}
 		// Produce holds details about calls to the Produce method.
 		Produce []struct {
 			// Ctx is the ctx argument value.
@@ -75,8 +74,7 @@ func (mock *ProducerMock) Close() error {
 	if mock.CloseFunc == nil {
 		panic("ProducerMock.CloseFunc: method is nil but Producer.Close was just called")
 	}
-	callInfo := struct {
-	}{}
+	callInfo := struct{}{}
 	mock.lockClose.Lock()
 	mock.calls.Close = append(mock.calls.Close, callInfo)
 	mock.lockClose.Unlock()
@@ -87,10 +85,8 @@ func (mock *ProducerMock) Close() error {
 // Check the length with:
 //
 //	len(mockedProducer.CloseCalls())
-func (mock *ProducerMock) CloseCalls() []struct {
-} {
-	var calls []struct {
-	}
+func (mock *ProducerMock) CloseCalls() []struct{} {
+	var calls []struct{}
 	mock.lockClose.RLock()
 	calls = mock.calls.Close
 	mock.lockClose.RUnlock()
@@ -205,8 +201,7 @@ type ConsumerMock struct {
 	// calls tracks calls to the methods.
 	calls struct {
 		// Close holds details about calls to the Close method.
-		Close []struct {
-		}
+		Close []struct{}
 		// Consume holds details about calls to the Consume method.
 		Consume []struct {
 			// Ctx is the ctx argument value.
@@ -226,8 +221,7 @@ func (mock *ConsumerMock) Close() error {
 	if mock.CloseFunc == nil {
 		panic("ConsumerMock.CloseFunc: method is nil but Consumer.Close was just called")
 	}
-	callInfo := struct {
-	}{}
+	callInfo := struct{}{}
 	mock.lockClose.Lock()
 	mock.calls.Close = append(mock.calls.Close, callInfo)
 	mock.lockClose.Unlock()
@@ -238,10 +232,8 @@ func (mock *ConsumerMock) Close() error {
 // Check the length with:
 //
 //	len(mockedConsumer.CloseCalls())
-func (mock *ConsumerMock) CloseCalls() []struct {
-} {
-	var calls []struct {
-	}
+func (mock *ConsumerMock) CloseCalls() []struct{} {
+	var calls []struct{}
 	mock.lockClose.RLock()
 	calls = mock.calls.Close
 	mock.lockClose.RUnlock()
@@ -398,8 +390,7 @@ type AdminMock struct {
 	// calls tracks calls to the methods.
 	calls struct {
 		// Close holds details about calls to the Close method.
-		Close []struct {
-		}
+		Close []struct{}
 		// CreateTopic holds details about calls to the CreateTopic method.
 		CreateTopic []struct {
 			// Ctx is the ctx argument value.
@@ -439,8 +430,7 @@ func (mock *AdminMock) Close() error {
 	if mock.CloseFunc == nil {
 		panic("AdminMock.CloseFunc: method is nil but Admin.Close was just called")
 	}
-	callInfo := struct {
-	}{}
+	callInfo := struct{}{}
 	mock.lockClose.Lock()
 	mock.calls.Close = append(mock.calls.Close, callInfo)
 	mock.lockClose.Unlock()
@@ -451,10 +441,8 @@ func (mock *AdminMock) Close() error {
 // Check the length with:
 //
 //	len(mockedAdmin.CloseCalls())
-func (mock *AdminMock) CloseCalls() []struct {
-} {
-	var calls []struct {
-	}
+func (mock *AdminMock) CloseCalls() []struct{} {
+	var calls []struct{}
 	mock.lockClose.RLock()
 	calls = mock.calls.Close
 	mock.lockClose.RUnlock()
@@ -591,16 +579,16 @@ var _ Logger = &LoggerMock{}
 //
 //		// make and configure a mocked Logger
 //		mockedLogger := &LoggerMock{
-//			DebugFunc: func(msg string, fields ...interface{})  {
+//			DebugFunc: func(msg string, fields ...any)  {
 //				panic("mock out the Debug method")
 //			},
-//			ErrorFunc: func(msg string, fields ...interface{})  {
+//			ErrorFunc: func(msg string, fields ...any)  {
 //				panic("mock out the Error method")
 //			},
-//			InfoFunc: func(msg string, fields ...interface{})  {
+//			InfoFunc: func(msg string, fields ...any)  {
 //				panic("mock out the Info method")
 //			},
-//			WarnFunc: func(msg string, fields ...interface{})  {
+//			WarnFunc: func(msg string, fields ...any)  {
 //				panic("mock out the Warn method")
 //			},
 //		}
@@ -611,16 +599,16 @@ var _ Logger = &LoggerMock{}
 //	}
 type LoggerMock struct {
 	// DebugFunc mocks the Debug method.
-	DebugFunc func(msg string, fields ...interface{})
+	DebugFunc func(msg string, fields ...any)
 
 	// ErrorFunc mocks the Error method.
-	ErrorFunc func(msg string, fields ...interface{})
+	ErrorFunc func(msg string, fields ...any)
 
 	// InfoFunc mocks the Info method.
-	InfoFunc func(msg string, fields ...interface{})
+	InfoFunc func(msg string, fields ...any)
 
 	// WarnFunc mocks the Warn method.
-	WarnFunc func(msg string, fields ...interface{})
+	WarnFunc func(msg string, fields ...any)
 
 	// calls tracks calls to the methods.
 	calls struct {
@@ -629,28 +617,28 @@ type LoggerMock struct {
 			// Msg is the msg argument value.
 			Msg string
 			// Fields is the fields argument value.
-			Fields []interface{}
+			Fields []any
 		}
 		// Error holds details about calls to the Error method.
 		Error []struct {
 			// Msg is the msg argument value.
 			Msg string
 			// Fields is the fields argument value.
-			Fields []interface{}
+			Fields []any
 		}
 		// Info holds details about calls to the Info method.
 		Info []struct {
 			// Msg is the msg argument value.
 			Msg string
 			// Fields is the fields argument value.
-			Fields []interface{}
+			Fields []any
 		}
 		// Warn holds details about calls to the Warn method.
 		Warn []struct {
 			// Msg is the msg argument value.
 			Msg string
 			// Fields is the fields argument value.
-			Fields []interface{}
+			Fields []any
 		}
 	}
 	lockDebug sync.RWMutex
@@ -660,13 +648,13 @@ type LoggerMock struct {
 }
 
 // Debug calls DebugFunc.
-func (mock *LoggerMock) Debug(msg string, fields ...interface{}) {
+func (mock *LoggerMock) Debug(msg string, fields ...any) {
 	if mock.DebugFunc == nil {
 		panic("LoggerMock.DebugFunc: method is nil but Logger.Debug was just called")
 	}
 	callInfo := struct {
 		Msg    string
-		Fields []interface{}
+		Fields []any
 	}{
 		Msg:    msg,
 		Fields: fields,
@@ -683,11 +671,11 @@ func (mock *LoggerMock) Debug(msg string, fields ...interface{}) {
 //	len(mockedLogger.DebugCalls())
 func (mock *LoggerMock) DebugCalls() []struct {
 	Msg    string
-	Fields []interface{}
+	Fields []any
 } {
 	var calls []struct {
 		Msg    string
-		Fields []interface{}
+		Fields []any
 	}
 	mock.lockDebug.RLock()
 	calls = mock.calls.Debug
@@ -696,13 +684,13 @@ func (mock *LoggerMock) DebugCalls() []struct {
 }
 
 // Error calls ErrorFunc.
-func (mock *LoggerMock) Error(msg string, fields ...interface{}) {
+func (mock *LoggerMock) Error(msg string, fields ...any) {
 	if mock.ErrorFunc == nil {
 		panic("LoggerMock.ErrorFunc: method is nil but Logger.Error was just called")
 	}
 	callInfo := struct {
 		Msg    string
-		Fields []interface{}
+		Fields []any
 	}{
 		Msg:    msg,
 		Fields: fields,
@@ -719,11 +707,11 @@ func (mock *LoggerMock) Error(msg string, fields ...interface{}) {
 //	len(mockedLogger.ErrorCalls())
 func (mock *LoggerMock) ErrorCalls() []struct {
 	Msg    string
-	Fields []interface{}
+	Fields []any
 } {
 	var calls []struct {
 		Msg    string
-		Fields []interface{}
+		Fields []any
 	}
 	mock.lockError.RLock()
 	calls = mock.calls.Error
@@ -732,13 +720,13 @@ func (mock *LoggerMock) ErrorCalls() []struct {
 }
 
 // Info calls InfoFunc.
-func (mock *LoggerMock) Info(msg string, fields ...interface{}) {
+func (mock *LoggerMock) Info(msg string, fields ...any) {
 	if mock.InfoFunc == nil {
 		panic("LoggerMock.InfoFunc: method is nil but Logger.Info was just called")
 	}
 	callInfo := struct {
 		Msg    string
-		Fields []interface{}
+		Fields []any
 	}{
 		Msg:    msg,
 		Fields: fields,
@@ -755,11 +743,11 @@ func (mock *LoggerMock) Info(msg string, fields ...interface{}) {
 //	len(mockedLogger.InfoCalls())
 func (mock *LoggerMock) InfoCalls() []struct {
 	Msg    string
-	Fields []interface{}
+	Fields []any
 } {
 	var calls []struct {
 		Msg    string
-		Fields []interface{}
+		Fields []any
 	}
 	mock.lockInfo.RLock()
 	calls = mock.calls.Info
@@ -768,13 +756,13 @@ func (mock *LoggerMock) InfoCalls() []struct {
 }
 
 // Warn calls WarnFunc.
-func (mock *LoggerMock) Warn(msg string, fields ...interface{}) {
+func (mock *LoggerMock) Warn(msg string, fields ...any) {
 	if mock.WarnFunc == nil {
 		panic("LoggerMock.WarnFunc: method is nil but Logger.Warn was just called")
 	}
 	callInfo := struct {
 		Msg    string
-		Fields []interface{}
+		Fields []any
 	}{
 		Msg:    msg,
 		Fields: fields,
@@ -791,11 +779,11 @@ func (mock *LoggerMock) Warn(msg string, fields ...interface{}) {
 //	len(mockedLogger.WarnCalls())
 func (mock *LoggerMock) WarnCalls() []struct {
 	Msg    string
-	Fields []interface{}
+	Fields []any
 } {
 	var calls []struct {
 		Msg    string
-		Fields []interface{}
+		Fields []any
 	}
 	mock.lockWarn.RLock()
 	calls = mock.calls.Warn
