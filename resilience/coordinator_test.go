@@ -210,7 +210,9 @@ func TestKafkaStateCoordinator_Acquire_ProducerError(t *testing.T) {
 
 	coordinator := NewKafkaStateCoordinator(
 		&Config{RedirectTopicPrefix: "redirect"},
-		&LoggerMock{},
+		&LoggerMock{
+			WarnFunc: func(msg string, fields ...interface{}) {},
+		},
 		mockProducer,
 		&ConsumerFactoryMock{},
 		&AdminMock{},
@@ -219,7 +221,7 @@ func TestKafkaStateCoordinator_Acquire_ProducerError(t *testing.T) {
 
 	err := coordinator.Acquire(context.Background(), &InternalMessage{topic: "t", Key: []byte("k")}, "t")
 	assert.Error(t, err)
-	assert.Equal(t, "kafka error", err.Error())
+	assert.Contains(t, err.Error(), "kafka error")
 
 	// Verify Rollback: Should NOT be locked
 	msg := &InternalMessage{topic: "t", Key: []byte("k")}

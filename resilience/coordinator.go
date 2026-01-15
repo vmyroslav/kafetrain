@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/avast/retry-go/v4"
 	"github.com/google/uuid"
 )
 
@@ -91,7 +92,7 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 		id = string(msg.Key)
 	}
 
-	// Optimistic locking: Update local state immediately
+	// optimistic locking: update local state immediately
 	key := string(msg.Key)
 	k.acquireLocal(originalTopic, key)
 
@@ -118,11 +119,32 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 		timestamp: time.Now(),
 	}
 
-	if err := k.producer.Produce(ctx, redirectMsg.Topic(), redirectMsg); err != nil {
+	err := retry.Do(
+		func() error {
+			return k.producer.Produce(ctx, redirectMsg.Topic(), redirectMsg)
+		},
+		retry.Context(ctx),
+		retry.Attempts(3),
+		retry.Delay(100*time.Millisecond),
+		retry.MaxDelay(2*time.Second),
+		retry.OnRetry(func(n uint, err error) {
+			k.logger.Warn(
+				"Failed to produce acquire message",
+				"topic",
+				originalTopic,
+				"attempt",
+				n+1,
+				"error",
+				err,
+			)
+		}),
+	)
+
+	if err != nil {
 		// rollback local state on failure
 		k.releaseLocal(originalTopic, key)
 
-		return err
+		return fmt.Errorf("failed to produce acquire message: %w", err)
 	}
 
 	return nil
@@ -166,10 +188,32 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 		timestamp: time.Now(),
 	}
 
-	if err := k.producer.Produce(ctx, tombstoneMsg.Topic(), tombstoneMsg); err != nil {
-		// Rollback local state on failure (re-acquire)
+	err := retry.Do(
+		func() error {
+			return k.producer.Produce(ctx, tombstoneMsg.Topic(), tombstoneMsg)
+		},
+		retry.Context(ctx),
+		retry.Attempts(3),
+		retry.Delay(100*time.Millisecond),
+		retry.MaxDelay(2*time.Second),
+		retry.OnRetry(func(n uint, err error) {
+			k.logger.Warn(
+				"Failed to produce release message",
+				"topic",
+				topic,
+				"attempt",
+				n+1,
+				"error",
+				err,
+			)
+		}),
+	)
+
+	if err != nil {
+		// rollback local state on failure
 		k.acquireLocal(topic, key)
-		return err
+
+		return fmt.Errorf("failed to produce release message: %w", err)
 	}
 
 	return nil
@@ -189,7 +233,7 @@ func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic s
 
 	return k.admin.CreateTopic(ctx, k.redirectTopic(topic), partitions, 1, map[string]string{
 		"cleanup.policy": "compact",
-		"segment.ms":     "100",
+		"segment.ms":     "100", // todo: make configurable and find optimal default value
 	})
 }
 
@@ -242,7 +286,7 @@ func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) 
 	_ = refillConsumer.Consume(refillCtx, []string{k.redirectTopic(topic)}, handler)
 	refillConsumer.Close()
 
-	// Clean up ephemeral group
+	// clean up ephemeral group
 	go func() {
 		_ = k.admin.DeleteConsumerGroup(context.Background(), refillCfg.GroupID)
 	}()
@@ -267,7 +311,7 @@ func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic
 }
 
 func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg Message) error {
-	// Ignore echo messages from self
+	// ignore echo messages from self
 	if originID, ok := msg.Headers().Get(HeaderCoordinatorID); ok {
 		if string(originID) == k.instanceID {
 			return nil
@@ -293,6 +337,7 @@ func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg 
 	}
 
 	_, err := k.addMessage(ctx, originalMsg)
+
 	return err
 }
 

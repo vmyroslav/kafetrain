@@ -71,6 +71,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string, handler Consumer
 	if err := t.coordinator.Start(ctx, topic); err != nil {
 		return err
 	}
+
 	return t.StartRetryWorker(ctx, topic, handler)
 }
 
@@ -247,6 +248,7 @@ func (t *ErrorTracker) NewResilientHandler(handler ConsumerHandler) ConsumerHand
 // This is the primary public API for standalone ErrorTracker usage.
 func (t *ErrorTracker) Redirect(ctx context.Context, msg Message, lastError error) error {
 	internalMsg := t.toInternalMessage(msg)
+
 	return t.redirectMessageWithError(ctx, internalMsg, lastError)
 }
 
