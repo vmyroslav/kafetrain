@@ -72,7 +72,7 @@ type InternalMessage struct {
 }
 
 func NewFromMessage(msg Message) *InternalMessage {
-	headers := make(HeaderList, 0)
+	headers := make(HeaderList, 0, len(msg.Headers().All()))
 	for key, value := range msg.Headers().All() {
 		headers = append(headers, Header{Key: []byte(key), Value: value})
 	}
