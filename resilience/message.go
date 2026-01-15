@@ -21,6 +21,8 @@ const (
 )
 
 const (
+	// HeaderCoordinatorID unique identifier for the coordinator instance
+	HeaderCoordinatorID = "x-coordinator-id"
 	// HeaderTopic stores the original topic name
 	HeaderTopic = "topic"
 	headerID    = "id"
@@ -89,6 +91,11 @@ func NewFromMessage(msg Message) *InternalMessage {
 // Topic returns the topic name of the message.
 func (m *InternalMessage) Topic() string {
 	return m.topic
+}
+
+// SetTopic sets the topic name of the message.
+func (m *InternalMessage) SetTopic(topic string) {
+	m.topic = topic
 }
 
 // Offset returns the offset of the message within its partition.

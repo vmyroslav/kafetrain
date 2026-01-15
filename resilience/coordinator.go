@@ -12,17 +12,14 @@ import (
 )
 
 // StateCoordinator abstracts the mechanism for acquiring and releasing locks on message keys.
-// It allows swapping the default Kafka-topic-based coordination with external stores like Redis.
 type StateCoordinator interface {
 	// Start initializes the coordinator (e.g., starts background listeners).
 	Start(ctx context.Context, topic string) error
 
 	// Acquire locks the key to ensure strict ordering.
-	// For Kafka: Publishes to the redirect topic.
 	Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error
 
 	// Release unlocks the key.
-	// For Kafka: Publishes a tombstone to the redirect topic.
 	Release(ctx context.Context, msg *InternalMessage) error
 
 	// IsLocked checks if the key is currently locked.
@@ -39,6 +36,7 @@ type KafkaStateCoordinator struct {
 	cfg             *Config
 	logger          Logger
 	errors          chan<- error
+	instanceID      string
 }
 
 func NewKafkaStateCoordinator(
@@ -57,10 +55,11 @@ func NewKafkaStateCoordinator(
 		cfg:             cfg,
 		logger:          logger,
 		errors:          errCh,
+		instanceID:      uuid.New().String(),
 	}
 }
 
-func (k *KafkaStateCoordinator) IsLocked(ctx context.Context, msg *InternalMessage) bool {
+func (k *KafkaStateCoordinator) IsLocked(_ context.Context, msg *InternalMessage) bool {
 	k.mu.RLock()
 	defer k.mu.RUnlock()
 
@@ -71,25 +70,30 @@ func (k *KafkaStateCoordinator) IsLocked(ctx context.Context, msg *InternalMessa
 }
 
 func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
-	// Ensure redirect topic exists
+	// ensure redirect topic exists
 	if err := k.ensureRedirectTopic(ctx, topic); err != nil {
 		return err
 	}
 
-	// Restore state from redirect topic
+	// restore state from redirect topic
 	if err := k.restoreState(ctx, topic); err != nil {
 		return err
 	}
 
-	// Start live monitoring of redirect topic
+	// start monitoring of redirect topic
 	return k.startRedirectConsumer(ctx, topic)
 }
 
+// Acquire locks the key for the given message.
 func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error {
 	id, ok := GetHeaderValue[string](&msg.Headers, headerID)
 	if !ok {
 		id = string(msg.Key)
 	}
+
+	// Optimistic locking: Update local state immediately
+	key := string(msg.Key)
+	k.acquireLocal(originalTopic, key)
 
 	headers := HeaderList{
 		{
@@ -99,6 +103,10 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 		{
 			Key:   []byte("key"),
 			Value: msg.Key,
+		},
+		{
+			Key:   []byte(HeaderCoordinatorID),
+			Value: []byte(k.instanceID),
 		},
 	}
 
@@ -110,7 +118,14 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 		timestamp: time.Now(),
 	}
 
-	return k.producer.Produce(ctx, redirectMsg.Topic(), redirectMsg)
+	if err := k.producer.Produce(ctx, redirectMsg.Topic(), redirectMsg); err != nil {
+		// rollback local state on failure
+		k.releaseLocal(originalTopic, key)
+
+		return err
+	}
+
+	return nil
 }
 
 func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessage) error {
@@ -124,6 +139,10 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 		topic = msg.topic
 	}
 
+	// Optimistic release: Update local state immediately
+	key := string(msg.Key)
+	k.releaseLocal(topic, key)
+
 	headers := HeaderList{
 		{
 			Key:   []byte(HeaderTopic),
@@ -132,6 +151,10 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 		{
 			Key:   []byte(headerKey),
 			Value: msg.Key,
+		},
+		{
+			Key:   []byte(HeaderCoordinatorID),
+			Value: []byte(k.instanceID),
 		},
 	}
 
@@ -143,7 +166,13 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 		timestamp: time.Now(),
 	}
 
-	return k.producer.Produce(ctx, tombstoneMsg.Topic(), tombstoneMsg)
+	if err := k.producer.Produce(ctx, tombstoneMsg.Topic(), tombstoneMsg); err != nil {
+		// Rollback local state on failure (re-acquire)
+		k.acquireLocal(topic, key)
+		return err
+	}
+
+	return nil
 }
 
 func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic string) error {
@@ -238,6 +267,13 @@ func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic
 }
 
 func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg Message) error {
+	// Ignore echo messages from self
+	if originID, ok := msg.Headers().Get(HeaderCoordinatorID); ok {
+		if string(originID) == k.instanceID {
+			return nil
+		}
+	}
+
 	if msg.Value() == nil {
 		return k.ReleaseMessage(ctx, k.toInternalMessage(msg))
 	}
@@ -272,6 +308,12 @@ func (k *KafkaStateCoordinator) addMessage(_ context.Context, msg *InternalMessa
 	return key, nil
 }
 
+func (k *KafkaStateCoordinator) acquireLocal(topic, key string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.lm.incrementRef(topic, key)
+}
+
 func (k *KafkaStateCoordinator) ReleaseMessage(ctx context.Context, msg *InternalMessage) error {
 	topic, ok := GetHeaderValue[string](&msg.Headers, HeaderTopic)
 	if !ok {
@@ -304,6 +346,22 @@ func (k *KafkaStateCoordinator) ReleaseMessage(ctx context.Context, msg *Interna
 	}
 
 	return nil
+}
+
+func (k *KafkaStateCoordinator) releaseLocal(topic, key string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	newCount, exists := k.lm.decrementRef(topic, key)
+	if !exists {
+		return
+	}
+	if newCount <= 0 {
+		k.lm.removeKey(topic, key)
+	}
+	if k.lm.isTopicEmpty(topic) {
+		k.lm.removeTopic(topic)
+	}
 }
 
 func (k *KafkaStateCoordinator) toInternalMessage(msg Message) *InternalMessage {
