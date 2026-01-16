@@ -266,15 +266,17 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 	nextAttempt := currentAttempt + 1
 
 	key := string(msg.KeyData)
+	destinationTopic := t.RetryTopic(originalTopic)
 
 	t.logger.Debug("redirecting message to retry topic",
-		"topic", msg.topic,
+		"destination_topic", destinationTopic,
+		"source_topic", msg.topic,
 		"original_topic", originalTopic,
 		"key", key,
 		"attempt", nextAttempt,
 		"max_retries", t.cfg.MaxRetries,
-		"next_delay", nextDelay,
-		"next_retry_time", nextRetryTime,
+		"next_delay_ms", nextDelay.Milliseconds(),
+		"next_retry_time", nextRetryTime.Format(time.RFC3339),
 	)
 
 	// Sequential publish with compensating rollback to ensure atomicity.
