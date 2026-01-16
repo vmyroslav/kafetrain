@@ -2,16 +2,10 @@ package resilience
 
 // Config holds configuration for the retry mechanism.
 type Config struct {
-	Password                  string
-	CACert                    string
 	RetryTopicPrefix          string
 	RedirectTopicPrefix       string
 	GroupID                   string
-	Version                   string
-	ClientID                  string
-	Username                  string
 	DLQTopicPrefix            string
-	Brokers                   []string
 	MaxRetries                int
 	InitialOffset             int64
 	RetryTopicPartitions      int32
@@ -29,7 +23,6 @@ func NewDefaultConfig() *Config {
 		RedirectTopicPrefix:       "redirect",
 		DLQTopicPrefix:            "dlq",
 		RetryTopicPrefix:          "retry",
-		ClientID:                  "kafetrain-consumer",
 		MaxRetries:                5,
 		RetryTopicPartitions:      0,
 		InitialOffset:             -2, // OffsetOldest

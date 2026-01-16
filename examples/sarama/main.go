@@ -46,7 +46,6 @@ func main() {
 
 	// initialize config
 	resilienceCfg := resilience.NewDefaultConfig()
-	resilienceCfg.Brokers = brokers
 	resilienceCfg.GroupID = groupID
 	resilienceCfg.MaxRetries = 3
 	resilienceCfg.RetryTopicPartitions = 1 // simplified for example

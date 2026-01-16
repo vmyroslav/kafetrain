@@ -107,7 +107,6 @@ func TestIntegration_SaramaAdmin(t *testing.T) {
 
 		assert.Equal(t, testTopic, metadata[0].Name())
 		assert.Equal(t, int32(3), metadata[0].Partitions())
-		assert.Equal(t, int16(1), metadata[0].ReplicationFactor())
 
 		logger.Info("topic created successfully",
 			zap.String("topic", testTopic),
@@ -235,9 +234,7 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 
 	// Create config
 	cfg := resilience.NewDefaultConfig()
-	cfg.Brokers = []string{broker}
 	cfg.GroupID = groupID
-	cfg.Version = "4.1.0"
 	cfg.MaxRetries = 3
 	cfg.RetryTopicPartitions = 1
 
@@ -558,9 +555,7 @@ func TestIntegration_ChainRetry(t *testing.T) {
 
 	// Create config with 3 max retries
 	cfg := resilience.NewDefaultConfig()
-	cfg.Brokers = []string{broker}
 	cfg.GroupID = groupID
-	cfg.Version = "4.1.0"
 	cfg.MaxRetries = 3
 	cfg.RetryTopicPartitions = 1
 
@@ -797,9 +792,7 @@ func TestIntegration_DLQ(t *testing.T) {
 
 	// Create config with MaxRetries=3, FreeOnDLQ=false (default)
 	cfg := resilience.NewDefaultConfig()
-	cfg.Brokers = []string{broker}
 	cfg.GroupID = groupID
-	cfg.Version = "4.1.0"
 	cfg.MaxRetries = 3
 	cfg.RetryTopicPartitions = 1
 	cfg.FreeOnDLQ = false // Message stays in tracking after DLQ
@@ -1109,9 +1102,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 
 	// Create config with FreeOnDLQ=true
 	cfg := resilience.NewDefaultConfig()
-	cfg.Brokers = []string{broker}
 	cfg.GroupID = groupID
-	cfg.Version = "4.1.0"
 	cfg.MaxRetries = 3
 	cfg.RetryTopicPartitions = 1
 	cfg.FreeOnDLQ = true // FREE message from tracking after DLQ

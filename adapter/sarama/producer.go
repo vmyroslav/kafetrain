@@ -31,26 +31,6 @@ func (p *ProducerAdapter) Produce(ctx context.Context, topic string, msg resilie
 	return err
 }
 
-// ProduceBatch implements retry.Producer interface.
-func (p *ProducerAdapter) ProduceBatch(ctx context.Context, messages []resilience.MessageTarget) error {
-	if len(messages) == 0 {
-		return nil
-	}
-
-	saramaMsgs := make([]*sarama.ProducerMessage, len(messages))
-	for i, mt := range messages {
-		saramaMsgs[i] = &sarama.ProducerMessage{
-			Topic:     mt.Topic,
-			Key:       sarama.ByteEncoder(mt.Message.Key()),
-			Value:     sarama.ByteEncoder(mt.Message.Value()),
-			Headers:   ToSaramaHeaders(mt.Message.Headers()),
-			Timestamp: mt.Message.Timestamp(),
-		}
-	}
-
-	return p.producer.SendMessages(saramaMsgs)
-}
-
 // Close implements retry.Producer interface.
 func (p *ProducerAdapter) Close() error {
 	return p.producer.Close()

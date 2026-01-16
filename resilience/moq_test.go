@@ -24,9 +24,6 @@ var _ Producer = &ProducerMock{}
 //			ProduceFunc: func(ctx context.Context, topic string, msg Message) error {
 //				panic("mock out the Produce method")
 //			},
-//			ProduceBatchFunc: func(ctx context.Context, messages []MessageTarget) error {
-//				panic("mock out the ProduceBatch method")
-//			},
 //		}
 //
 //		// use mockedProducer in code that requires Producer
@@ -40,13 +37,11 @@ type ProducerMock struct {
 	// ProduceFunc mocks the Produce method.
 	ProduceFunc func(ctx context.Context, topic string, msg Message) error
 
-	// ProduceBatchFunc mocks the ProduceBatch method.
-	ProduceBatchFunc func(ctx context.Context, messages []MessageTarget) error
-
 	// calls tracks calls to the methods.
 	calls struct {
 		// Close holds details about calls to the Close method.
-		Close []struct{}
+		Close []struct {
+		}
 		// Produce holds details about calls to the Produce method.
 		Produce []struct {
 			// Ctx is the ctx argument value.
@@ -56,17 +51,9 @@ type ProducerMock struct {
 			// Msg is the msg argument value.
 			Msg Message
 		}
-		// ProduceBatch holds details about calls to the ProduceBatch method.
-		ProduceBatch []struct {
-			// Ctx is the ctx argument value.
-			Ctx context.Context
-			// Messages is the messages argument value.
-			Messages []MessageTarget
-		}
 	}
-	lockClose        sync.RWMutex
-	lockProduce      sync.RWMutex
-	lockProduceBatch sync.RWMutex
+	lockClose   sync.RWMutex
+	lockProduce sync.RWMutex
 }
 
 // Close calls CloseFunc.
@@ -74,7 +61,8 @@ func (mock *ProducerMock) Close() error {
 	if mock.CloseFunc == nil {
 		panic("ProducerMock.CloseFunc: method is nil but Producer.Close was just called")
 	}
-	callInfo := struct{}{}
+	callInfo := struct {
+	}{}
 	mock.lockClose.Lock()
 	mock.calls.Close = append(mock.calls.Close, callInfo)
 	mock.lockClose.Unlock()
@@ -85,8 +73,10 @@ func (mock *ProducerMock) Close() error {
 // Check the length with:
 //
 //	len(mockedProducer.CloseCalls())
-func (mock *ProducerMock) CloseCalls() []struct{} {
-	var calls []struct{}
+func (mock *ProducerMock) CloseCalls() []struct {
+} {
+	var calls []struct {
+	}
 	mock.lockClose.RLock()
 	calls = mock.calls.Close
 	mock.lockClose.RUnlock()
@@ -133,42 +123,6 @@ func (mock *ProducerMock) ProduceCalls() []struct {
 	return calls
 }
 
-// ProduceBatch calls ProduceBatchFunc.
-func (mock *ProducerMock) ProduceBatch(ctx context.Context, messages []MessageTarget) error {
-	if mock.ProduceBatchFunc == nil {
-		panic("ProducerMock.ProduceBatchFunc: method is nil but Producer.ProduceBatch was just called")
-	}
-	callInfo := struct {
-		Ctx      context.Context
-		Messages []MessageTarget
-	}{
-		Ctx:      ctx,
-		Messages: messages,
-	}
-	mock.lockProduceBatch.Lock()
-	mock.calls.ProduceBatch = append(mock.calls.ProduceBatch, callInfo)
-	mock.lockProduceBatch.Unlock()
-	return mock.ProduceBatchFunc(ctx, messages)
-}
-
-// ProduceBatchCalls gets all the calls that were made to ProduceBatch.
-// Check the length with:
-//
-//	len(mockedProducer.ProduceBatchCalls())
-func (mock *ProducerMock) ProduceBatchCalls() []struct {
-	Ctx      context.Context
-	Messages []MessageTarget
-} {
-	var calls []struct {
-		Ctx      context.Context
-		Messages []MessageTarget
-	}
-	mock.lockProduceBatch.RLock()
-	calls = mock.calls.ProduceBatch
-	mock.lockProduceBatch.RUnlock()
-	return calls
-}
-
 // Ensure, that ConsumerMock does implement Consumer.
 // If this is not the case, regenerate this file with moq.
 var _ Consumer = &ConsumerMock{}
@@ -201,7 +155,8 @@ type ConsumerMock struct {
 	// calls tracks calls to the methods.
 	calls struct {
 		// Close holds details about calls to the Close method.
-		Close []struct{}
+		Close []struct {
+		}
 		// Consume holds details about calls to the Consume method.
 		Consume []struct {
 			// Ctx is the ctx argument value.
@@ -221,7 +176,8 @@ func (mock *ConsumerMock) Close() error {
 	if mock.CloseFunc == nil {
 		panic("ConsumerMock.CloseFunc: method is nil but Consumer.Close was just called")
 	}
-	callInfo := struct{}{}
+	callInfo := struct {
+	}{}
 	mock.lockClose.Lock()
 	mock.calls.Close = append(mock.calls.Close, callInfo)
 	mock.lockClose.Unlock()
@@ -232,8 +188,10 @@ func (mock *ConsumerMock) Close() error {
 // Check the length with:
 //
 //	len(mockedConsumer.CloseCalls())
-func (mock *ConsumerMock) CloseCalls() []struct{} {
-	var calls []struct{}
+func (mock *ConsumerMock) CloseCalls() []struct {
+} {
+	var calls []struct {
+	}
 	mock.lockClose.RLock()
 	calls = mock.calls.Close
 	mock.lockClose.RUnlock()
@@ -390,7 +348,8 @@ type AdminMock struct {
 	// calls tracks calls to the methods.
 	calls struct {
 		// Close holds details about calls to the Close method.
-		Close []struct{}
+		Close []struct {
+		}
 		// CreateTopic holds details about calls to the CreateTopic method.
 		CreateTopic []struct {
 			// Ctx is the ctx argument value.
@@ -430,7 +389,8 @@ func (mock *AdminMock) Close() error {
 	if mock.CloseFunc == nil {
 		panic("AdminMock.CloseFunc: method is nil but Admin.Close was just called")
 	}
-	callInfo := struct{}{}
+	callInfo := struct {
+	}{}
 	mock.lockClose.Lock()
 	mock.calls.Close = append(mock.calls.Close, callInfo)
 	mock.lockClose.Unlock()
@@ -441,8 +401,10 @@ func (mock *AdminMock) Close() error {
 // Check the length with:
 //
 //	len(mockedAdmin.CloseCalls())
-func (mock *AdminMock) CloseCalls() []struct{} {
-	var calls []struct{}
+func (mock *AdminMock) CloseCalls() []struct {
+} {
+	var calls []struct {
+	}
 	mock.lockClose.RLock()
 	calls = mock.calls.Close
 	mock.lockClose.RUnlock()

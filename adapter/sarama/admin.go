@@ -80,16 +80,9 @@ func (a *AdminAdapter) DescribeTopics(_ context.Context, topics []string) ([]res
 			continue
 		}
 
-		// get replication factor from first partition (all partitions have same RF)
-		var replicationFactor int16 = 1
-		if len(md.Partitions) > 0 {
-			replicationFactor = int16(len(md.Partitions[0].Replicas))
-		}
-
 		result = append(result, &topicMetadata{
-			name:              md.Name,
-			partitions:        int32(len(md.Partitions)),
-			replicationFactor: replicationFactor,
+			name:       md.Name,
+			partitions: int32(len(md.Partitions)),
 		})
 	}
 
@@ -113,11 +106,9 @@ func (a *AdminAdapter) Close() error {
 
 // topicMetadata implements retry.TopicMetadata interface.
 type topicMetadata struct {
-	name              string
-	partitions        int32
-	replicationFactor int16
+	name       string
+	partitions int32
 }
 
-func (t *topicMetadata) Name() string             { return t.name }
-func (t *topicMetadata) Partitions() int32        { return t.partitions }
-func (t *topicMetadata) ReplicationFactor() int16 { return t.replicationFactor }
+func (t *topicMetadata) Name() string      { return t.name }
+func (t *topicMetadata) Partitions() int32 { return t.partitions }

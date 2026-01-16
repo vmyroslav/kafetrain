@@ -26,19 +26,8 @@ type Producer interface {
 	// Produce publishes a single message to the specified topic
 	Produce(ctx context.Context, topic string, msg Message) error
 
-	// ProduceBatch publishes multiple messages atomically
-	// TODO: use it insted of SAGA?
-	ProduceBatch(ctx context.Context, messages []MessageTarget) error
-
 	// Close releases producer resources
 	Close() error
-}
-
-// MessageTarget represents a message with its destination topic.
-// Used for batch operations where different messages go to different topics.
-type MessageTarget struct {
-	Message Message
-	Topic   string
 }
 
 // ConsumerHandler processes messages (library-agnostic).
@@ -104,7 +93,4 @@ type TopicMetadata interface {
 
 	// Partitions returns the number of partitions.
 	Partitions() int32
-
-	// ReplicationFactor returns the replication factor.
-	ReplicationFactor() int16
 }
