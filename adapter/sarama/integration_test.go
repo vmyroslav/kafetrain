@@ -272,7 +272,7 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 	logger.Info("tracker started, topics should be created")
 
 	// Get retry topic name for later use
-	retryTopic := tracker.GetRetryTopic(topic)
+	retryTopic := tracker.RetryTopic(topic)
 
 	// Create business logic processor
 	processor := &testMessageProcessor{
@@ -592,7 +592,7 @@ func TestIntegration_ChainRetry(t *testing.T) {
 	err = tracker.StartTracking(ctx, topic)
 	require.NoError(t, err, "failed to start tracking")
 
-	retryTopic := tracker.GetRetryTopic(topic)
+	retryTopic := tracker.RetryTopic(topic)
 	redirectTopic := tracker.GetRedirectTopic(topic)
 
 	logger.Info("tracker started",
@@ -832,7 +832,7 @@ func TestIntegration_DLQ(t *testing.T) {
 	err = tracker.StartTracking(ctx, topic)
 	require.NoError(t, err, "failed to start tracking")
 
-	retryTopic := tracker.GetRetryTopic(topic)
+	retryTopic := tracker.RetryTopic(topic)
 	dlqTopic := tracker.GetDLQTopic(topic)
 
 	logger.Info("tracker started",
@@ -1144,7 +1144,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 	err = tracker.StartTracking(ctx, topic)
 	require.NoError(t, err, "failed to start tracking")
 
-	retryTopic := tracker.GetRetryTopic(topic)
+	retryTopic := tracker.RetryTopic(topic)
 	dlqTopic := tracker.GetDLQTopic(topic)
 
 	// Create handler

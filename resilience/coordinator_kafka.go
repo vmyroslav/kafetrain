@@ -11,21 +11,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// StateCoordinator abstracts the mechanism for acquiring and releasing locks on message keys.
-type StateCoordinator interface {
-	// Start initializes the coordinator (e.g., starts background listeners).
-	Start(ctx context.Context, topic string) error
-
-	// Acquire locks the key to ensure strict ordering.
-	Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error
-
-	// Release unlocks the key.
-	Release(ctx context.Context, msg *InternalMessage) error
-
-	// IsLocked checks if the key is currently locked.
-	IsLocked(ctx context.Context, msg *InternalMessage) bool
-}
-
 // KafkaStateCoordinator implements StateCoordinator using a compacted Kafka topic and local memory.
 // It decorates LocalStateCoordinator to add distributed synchronization.
 type KafkaStateCoordinator struct {
@@ -39,6 +24,7 @@ type KafkaStateCoordinator struct {
 	instanceID      string
 }
 
+// TODO: add a seprate smaller config struct for coordinator only
 func NewKafkaStateCoordinator(
 	cfg *Config,
 	logger Logger,
@@ -80,7 +66,7 @@ func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 
 // Acquire locks the key for the given message.
 func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error {
-	id, ok := GetHeaderValue[string](&msg.HeaderData, headerID)
+	id, ok := GetHeaderValue[string](&msg.HeaderData, HeaderID)
 	if !ok {
 		id = string(msg.KeyData)
 	}
@@ -144,7 +130,7 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 }
 
 func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessage) error {
-	id, ok := GetHeaderValue[string](&msg.HeaderData, headerID)
+	id, ok := GetHeaderValue[string](&msg.HeaderData, HeaderID)
 	if !ok {
 		id = string(msg.KeyData)
 	}
@@ -165,7 +151,7 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 			Value: []byte(topic),
 		},
 		{
-			Key:   []byte(headerKey),
+			Key:   []byte(HeaderKey),
 			Value: msg.KeyData,
 		},
 		{
@@ -323,7 +309,7 @@ func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg 
 		return errors.New("redirect message missing topic header")
 	}
 
-	originalKeyBytes, ok := msg.Headers().Get(headerKey)
+	originalKeyBytes, ok := msg.Headers().Get(HeaderKey)
 	if !ok {
 		return errors.New("redirect message missing key header")
 	}
@@ -333,7 +319,7 @@ func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg 
 		KeyData: originalKeyBytes,
 	}
 
-	// Delegate to local coordinator
+	// delegate to local coordinator
 	return k.local.Acquire(ctx, originalMsg, originalMsg.topic)
 }
 
@@ -344,7 +330,7 @@ func (k *KafkaStateCoordinator) releaseMessage(ctx context.Context, msg *Interna
 		return errors.New("topic header not found")
 	}
 
-	if _, ok := GetHeaderValue[string](&msg.HeaderData, headerKey); !ok {
+	if _, ok := GetHeaderValue[string](&msg.HeaderData, HeaderKey); !ok {
 		return errors.New("key header not found")
 	}
 
@@ -352,6 +338,7 @@ func (k *KafkaStateCoordinator) releaseMessage(ctx context.Context, msg *Interna
 	return k.local.Release(ctx, msg)
 }
 
+// TODO: set ready to use name, do not generate it in coordinator
 func (k *KafkaStateCoordinator) redirectTopic(topic string) string {
 	return k.cfg.RedirectTopicPrefix + "_" + topic
 }

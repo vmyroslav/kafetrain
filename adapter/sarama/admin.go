@@ -2,6 +2,7 @@ package sarama
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/IBM/sarama"
@@ -53,8 +54,9 @@ func (a *AdminAdapter) CreateTopic(
 	err := a.admin.CreateTopic(name, topicDetail, false)
 	if err != nil {
 		// ignore "topic already exists" error
-		if topicErr, ok := err.(*sarama.TopicError); ok {
-			if topicErr.Err == sarama.ErrTopicAlreadyExists {
+		var topicErr *sarama.TopicError
+		if errors.As(err, &topicErr) {
+			if errors.Is(topicErr.Err, sarama.ErrTopicAlreadyExists) {
 				return nil
 			}
 		}
@@ -74,11 +76,11 @@ func (a *AdminAdapter) DescribeTopics(_ context.Context, topics []string) ([]res
 
 	result := make([]resilience.TopicMetadata, 0, len(metadata))
 	for _, md := range metadata {
-		if md.Err != sarama.ErrNoError {
+		if !errors.Is(md.Err, sarama.ErrNoError) {
 			continue
 		}
 
-		// Get replication factor from first partition (all partitions have same RF)
+		// get replication factor from first partition (all partitions have same RF)
 		var replicationFactor int16 = 1
 		if len(md.Partitions) > 0 {
 			replicationFactor = int16(len(md.Partitions[0].Replicas))
@@ -95,11 +97,12 @@ func (a *AdminAdapter) DescribeTopics(_ context.Context, topics []string) ([]res
 }
 
 // DeleteConsumerGroup implements retry.Admin interface.
-func (a *AdminAdapter) DeleteConsumerGroup(ctx context.Context, groupID string) error {
+func (a *AdminAdapter) DeleteConsumerGroup(_ context.Context, groupID string) error {
 	err := a.admin.DeleteConsumerGroup(groupID)
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 

@@ -88,7 +88,7 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 
 	// create retry topic
 	g.Go(func() error {
-		if err := t.admin.CreateTopic(ctx, t.retryTopic(topic), partitions, 1, map[string]string{
+		if err := t.admin.CreateTopic(ctx, t.RetryTopic(topic), partitions, 1, map[string]string{
 			"cleanup.policy": "delete",
 			"retention.ms":   "3600000", // 1 hour
 		}); err != nil {
@@ -122,7 +122,7 @@ func (t *ErrorTracker) StartRetryWorker(ctx context.Context, topic string, handl
 		return err
 	}
 
-	retryTopic := t.retryTopic(topic)
+	retryTopic := t.RetryTopic(topic)
 	retryConsumerGroup := t.cfg.GroupID + "-retry"
 
 	retryConsumer, err := t.consumerFactory.NewConsumer(retryConsumerGroup)
@@ -172,14 +172,9 @@ func (h *retryWorkerHandler) Handle(ctx context.Context, msg Message) error {
 	return h.t.Free(ctx, msg)
 }
 
-// GetRetryTopic returns the retry topic name for a given primary topic.
-func (t *ErrorTracker) GetRetryTopic(topic string) string {
-	return t.retryTopic(topic)
-}
-
 // GetRedirectTopic returns the redirect topic name for a given primary topic.
 func (t *ErrorTracker) GetRedirectTopic(topic string) string {
-	return t.redirectTopic(topic)
+	return t.RedirectTopic(topic)
 }
 
 // StartTracking starts the coordination layer (control plane) for the topic.
@@ -201,7 +196,7 @@ func (t *ErrorTracker) GetDLQTopic(topic string) string {
 // IsInRetryChain checks if a message is already in the retry chain.
 // Returns true if the message key is currently being tracked for retries.
 func (t *ErrorTracker) IsInRetryChain(msg Message) bool {
-	internalMsg := t.toInternalMessage(msg)
+	internalMsg := NewFromMessage(msg)
 	return t.coordinator.IsLocked(context.Background(), internalMsg)
 }
 
@@ -232,7 +227,7 @@ func (t *ErrorTracker) NewResilientHandler(handler ConsumerHandler) ConsumerHand
 // Redirect sends a failed message to the retry topic for reprocessing.
 // This is the primary public API for standalone ErrorTracker usage.
 func (t *ErrorTracker) Redirect(ctx context.Context, msg Message, lastError error) error {
-	internalMsg := t.toInternalMessage(msg)
+	internalMsg := NewFromMessage(msg)
 
 	return t.redirectMessageWithError(ctx, internalMsg, lastError)
 }
@@ -240,30 +235,8 @@ func (t *ErrorTracker) Redirect(ctx context.Context, msg Message, lastError erro
 // Free removes a successfully processed message from the retry chain.
 // Releases the lock via the coordinator.
 func (t *ErrorTracker) Free(ctx context.Context, msg Message) error {
-	internalMsg := t.toInternalMessage(msg)
+	internalMsg := NewFromMessage(msg)
 	return t.coordinator.Release(ctx, internalMsg)
-}
-
-// toInternalMessage converts a Message interface to internal InternalMessage type.
-func (t *ErrorTracker) toInternalMessage(msg Message) *InternalMessage {
-	// Convert Headers interface to HeaderList
-	headers := make(HeaderList, 0)
-	for key, value := range msg.Headers().All() {
-		headers = append(headers, Header{
-			Key:   []byte(key),
-			Value: value,
-		})
-	}
-
-	return &InternalMessage{
-		topic:         msg.Topic(),
-		partition:     msg.Partition(),
-		offset:        msg.Offset(),
-		KeyData:       msg.Key(),
-		Payload:       msg.Value(),
-		HeaderData:    headers,
-		TimestampData: msg.Timestamp(),
-	}
 }
 
 // redirectMessageWithError is the internal InternalMessage-based redirect implementation.
@@ -358,7 +331,7 @@ func (t *ErrorTracker) publishToRetry(
 		key := string(h.Key)
 		if key != HeaderRetryAttempt && key != HeaderRetryMax &&
 			key != HeaderRetryNextTime && key != HeaderRetryOriginalTime &&
-			key != HeaderRetryReason && key != headerID && key != headerRetry {
+			key != HeaderRetryReason && key != HeaderID && key != HeaderRetry {
 			retryHeaders = append(retryHeaders, h)
 		}
 	}
@@ -372,13 +345,13 @@ func (t *ErrorTracker) publishToRetry(
 		SetHeader[string](&retryHeaders, HeaderRetryReason, lastError.Error())
 	}
 
-	SetHeader[string](&retryHeaders, headerID, id)
-	SetHeader[string](&retryHeaders, headerRetry, "true")
+	SetHeader[string](&retryHeaders, HeaderID, id)
+	SetHeader[string](&retryHeaders, HeaderRetry, "true")
 	SetHeader[string](&retryHeaders, HeaderTopic, originalTopic)
 
 	// Create InternalMessage directly
 	retryMsg := &InternalMessage{
-		topic:         t.retryTopic(originalTopic),
+		topic:         t.RetryTopic(originalTopic),
 		KeyData:       msg.KeyData,
 		Payload:       msg.Payload,
 		HeaderData:    retryHeaders,
@@ -405,7 +378,7 @@ func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg *InternalMessage, last
 	for _, h := range msg.HeaderData {
 		key := string(h.Key)
 		if key != HeaderRetryAttempt && key != HeaderRetryMax &&
-			key != HeaderRetryNextTime && key != headerID && key != headerRetry {
+			key != HeaderRetryNextTime && key != HeaderID && key != HeaderRetry {
 			dlqHeaders = append(dlqHeaders, h)
 		}
 	}
@@ -439,11 +412,11 @@ func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg *InternalMessage, last
 	return t.producer.Produce(ctx, dlqMsg.Topic(), dlqMsg)
 }
 
-func (t *ErrorTracker) retryTopic(topic string) string {
+func (t *ErrorTracker) RetryTopic(topic string) string {
 	return t.cfg.RetryTopicPrefix + "_" + topic
 }
 
-func (t *ErrorTracker) redirectTopic(topic string) string {
+func (t *ErrorTracker) RedirectTopic(topic string) string {
 	return t.cfg.RedirectTopicPrefix + "_" + topic
 }
 

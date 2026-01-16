@@ -6,6 +6,21 @@ import (
 
 //go:generate go tool moq -out moq_test.go . Producer Consumer ConsumerFactory Admin Logger StateCoordinator
 
+// StateCoordinator abstracts the mechanism for acquiring and releasing locks on message keys.
+type StateCoordinator interface {
+	// Start initializes the coordinator (e.g., starts background listeners).
+	Start(ctx context.Context, topic string) error
+
+	// Acquire locks the key to ensure strict ordering.
+	Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error
+
+	// Release unlocks the key.
+	Release(ctx context.Context, msg *InternalMessage) error
+
+	// IsLocked checks if the key is currently locked.
+	IsLocked(ctx context.Context, msg *InternalMessage) bool
+}
+
 // Producer publishes messages to Kafka topics (library-agnostic).
 type Producer interface {
 	// Produce publishes a single message to the specified topic
@@ -57,7 +72,6 @@ type ConsumerFactory interface {
 }
 
 // Logger is a minimal logging interface (library-agnostic).
-// Allows kafetrain core to work with any logging library.
 type Logger interface {
 	Debug(msg string, fields ...any)
 	Info(msg string, fields ...any)
@@ -70,15 +84,13 @@ type Logger interface {
 type Admin interface {
 	// CreateTopic creates a topic with specified configuration.
 	// config keys: "cleanup.policy", "retention.ms", "segment.ms", etc.
-	// Returns nil if topic already exists (idempotent).
+	// Returns nil if topic already exists.
 	CreateTopic(ctx context.Context, name string, partitions int32, replicationFactor int16, config map[string]string) error
 
-	// DescribeTopics retrieves metadata for specified topics.
-	// Returns metadata for existing topics, skips non-existent ones.
+	// DescribeTopics retrieves metadata for specified topics, skips non-existent ones.
 	DescribeTopics(ctx context.Context, topics []string) ([]TopicMetadata, error)
 
 	// DeleteConsumerGroup removes a consumer group from the cluster.
-	// Used to clean up ephemeral groups created during state restoration.
 	DeleteConsumerGroup(ctx context.Context, groupID string) error
 
 	// Close releases admin client resources.

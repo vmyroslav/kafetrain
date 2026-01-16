@@ -57,7 +57,7 @@ func main() {
 
     // Same handler for BOTH consumers (DRY!)
     go mainConsumer.Consume(ctx, []string{"orders"}, handler)
-    go retryConsumer.Consume(ctx, []string{tracker.GetRetryTopic("orders")}, handler)
+    go retryConsumer.Consume(ctx, []string{tracker.RetryTopic("orders")}, handler)
 }
 
 type YourHandler struct {
@@ -237,7 +237,7 @@ tracker, err := resilience.NewErrorTrackerWithBackoff(cfg, logger, keyTracker, b
 err := tracker.StartTracking(ctx, "topic-name")
 
 // Get retry topic name (for manual consumption)
-retryTopic := tracker.GetRetryTopic("topic-name")
+retryTopic := tracker.RetryTopic("topic-name")
 
 // Redirect failed message to retry topic
 err := tracker.Redirect(ctx, *sarama.ConsumerMessage, error)

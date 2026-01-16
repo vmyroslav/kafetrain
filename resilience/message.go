@@ -25,9 +25,9 @@ const (
 	HeaderCoordinatorID = "x-coordinator-id"
 	// HeaderTopic stores the original topic name
 	HeaderTopic = "topic"
-	headerID    = "id"
-	headerRetry = "retry"
-	headerKey   = "key"
+	HeaderID    = "id"
+	HeaderRetry = "retry"
+	HeaderKey   = "key"
 )
 
 // Message represents a Kafka message
@@ -125,70 +125,7 @@ func (m *InternalMessage) Timestamp() time.Time {
 
 // Headers returns the message headers.
 func (m *InternalMessage) Headers() Headers {
-	return &HeadersAdapter{headers: &m.HeaderData}
-}
-
-// HeadersAdapter wraps HeaderList to implement the Headers interface.
-type HeadersAdapter struct {
-	headers *HeaderList
-}
-
-func (h *HeadersAdapter) Get(key string) ([]byte, bool) {
-	for _, header := range *h.headers {
-		if string(header.Key) == key {
-			return header.Value, true
-		}
-	}
-
-	return nil, false
-}
-
-func (h *HeadersAdapter) Set(key string, value []byte) {
-	// Find and update existing header
-	for i, header := range *h.headers {
-		if string(header.Key) == key {
-			(*h.headers)[i].Value = value
-			return
-		}
-	}
-	// Add new header if not found
-	*h.headers = append(*h.headers, Header{
-		Key:   []byte(key),
-		Value: value,
-	})
-}
-
-func (h *HeadersAdapter) All() map[string][]byte {
-	result := make(map[string][]byte, len(*h.headers))
-	for _, header := range *h.headers {
-		result[string(header.Key)] = header.Value
-	}
-
-	return result
-}
-
-func (h *HeadersAdapter) Delete(key string) {
-	newHeaders := make(HeaderList, 0, len(*h.headers))
-	for _, header := range *h.headers {
-		if string(header.Key) != key {
-			newHeaders = append(newHeaders, header)
-		}
-	}
-
-	*h.headers = newHeaders
-}
-
-func (h *HeadersAdapter) Clone() Headers {
-	// Deep copy the headers
-	cloned := make(HeaderList, len(*h.headers))
-	for i, header := range *h.headers {
-		cloned[i] = Header{
-			Key:   append([]byte(nil), header.Key...),
-			Value: append([]byte(nil), header.Value...),
-		}
-	}
-
-	return &HeadersAdapter{headers: &cloned}
+	return &m.HeaderData
 }
 
 type Header struct {
@@ -197,6 +134,65 @@ type Header struct {
 }
 
 type HeaderList []Header
+
+func (h *HeaderList) Get(key string) ([]byte, bool) {
+	for _, header := range *h {
+		if string(header.Key) == key {
+			return header.Value, true
+		}
+	}
+
+	return nil, false
+}
+
+func (h *HeaderList) Set(key string, value []byte) {
+	// find and update existing header
+	for i, header := range *h {
+		if string(header.Key) == key {
+			(*h)[i].Value = value
+			return
+		}
+	}
+
+	// add new header if not found
+	*h = append(*h, Header{
+		Key:   []byte(key),
+		Value: value,
+	})
+}
+
+func (h *HeaderList) All() map[string][]byte {
+	result := make(map[string][]byte, len(*h))
+	for _, header := range *h {
+		result[string(header.Key)] = header.Value
+	}
+
+	return result
+}
+
+func (h *HeaderList) Delete(key string) {
+	newHeaders := make(HeaderList, 0, len(*h))
+	for _, header := range *h {
+		if string(header.Key) != key {
+			newHeaders = append(newHeaders, header)
+		}
+	}
+
+	*h = newHeaders
+}
+
+func (h *HeaderList) Clone() Headers {
+	// deep copy the headers
+	cloned := make(HeaderList, len(*h))
+	for i, header := range *h {
+		cloned[i] = Header{
+			Key:   append([]byte(nil), header.Key...),
+			Value: append([]byte(nil), header.Value...),
+		}
+	}
+
+	return &cloned
+}
 
 func GetHeaderValue[T any](h *HeaderList, key string) (T, bool) {
 	var (
