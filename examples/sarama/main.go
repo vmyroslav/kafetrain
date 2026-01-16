@@ -3,14 +3,12 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/IBM/sarama"
 	saramaadapter "github.com/vmyroslav/kafetrain/adapter/sarama"
@@ -32,7 +30,7 @@ func main() {
 	slog.Info("Starting Kafetrain Sarama Example")
 	slog.Info("Configuration", "brokers", brokers)
 
-	// setup Sarama Client
+	// 1. Setup Sarama Client (Standard)
 	config := sarama.NewConfig()
 	config.Version = sarama.V4_1_0_0
 	config.Consumer.Offsets.Initial = sarama.OffsetOldest
@@ -46,75 +44,38 @@ func main() {
 	}
 	defer client.Close()
 
-	// create adapters. These adapters bridge Sarama types to Kafetrain resilience interfaces.
-	saramaProducer, err := sarama.NewSyncProducerFromClient(client)
-	if err != nil {
-		panic(fmt.Errorf("failed to create producer: %w", err))
-	}
-	producerAdapter := saramaadapter.NewProducerAdapter(saramaProducer)
-	defer producerAdapter.Close()
-
-	// onsumerFactory for creating new consumers
-	consumerFactory := saramaadapter.NewConsumerFactory(client)
-
-	// admin for creating topics
-	adminAdapter, err := saramaadapter.NewAdminAdapterFromClient(client)
-	if err != nil {
-		panic(fmt.Errorf("failed to create admin: %w", err))
-	}
-	defer adminAdapter.Close()
-
-	// initialize ErrorTracker
+	// initialize config
 	resilienceCfg := resilience.NewDefaultConfig()
 	resilienceCfg.Brokers = brokers
 	resilienceCfg.GroupID = groupID
 	resilienceCfg.MaxRetries = 3
-	resilienceCfg.RetryTopicPartitions = 1 // Simplified for example
-	resilienceCfg.FreeOnDLQ = false
+	resilienceCfg.RetryTopicPartitions = 1 // simplified for example
 
-	// create Coordinator
-	errCh := make(chan error, 10)
-	go func() {
-		for err := range errCh {
-			slog.Error("Kafetrain background error", "error", err)
-		}
-	}()
-
-	coordinator := resilience.NewKafkaStateCoordinator(
+	// NewResilienceTracker automatically wires up all default adapters and the coordinator
+	tracker, err := saramaadapter.NewResilienceTracker(
+		client,
 		resilienceCfg,
-		slog.Default(),
-		producerAdapter,
-		consumerFactory,
-		adminAdapter,
-		errCh,
-	)
-
-	tracker, err := resilience.NewErrorTracker(
-		resilienceCfg,
-		slog.Default(),
-		producerAdapter,
-		consumerFactory,
-		adminAdapter,
-		coordinator,
-		resilience.NewExponentialBackoff(),
+		saramaadapter.WithLogger(slog.Default()),
 	)
 	if err != nil {
-		slog.Error("failed to create error tracker", "error", err)
+		slog.Error("failed to create resilience manager", "error", err)
 		os.Exit(1)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// start Resilience Loop
+	// start tracker
 	handler := &OrderHandler{}
 	if err := tracker.Start(ctx, topic, handler); err != nil {
 		slog.Error("failed to start error tracker", "error", err)
 		os.Exit(1)
 	}
 
-	// start main application consumer
-	// it delegates resilience (Redirect/Free) to the tracker via NewResilientHandler
+	// start main consumer
+	// We use the factory from the adapter package, but you could also create your own Sarama consumer.
+	// The important part is using tracker.NewResilientHandler(handler).
+	consumerFactory := saramaadapter.NewConsumerFactory(client)
 	appConsumer, err := consumerFactory.NewConsumer(groupID)
 	if err != nil {
 		slog.Error("failed to create main consumer", "error", err)
@@ -127,7 +88,7 @@ func main() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		// ResilientHandler automatically handles strict ordering and redirection
+		// resilientHandler automatically handles strict ordering and redirection
 		if err := appConsumer.Consume(ctx, []string{topic}, tracker.NewResilientHandler(handler)); err != nil {
 			if !errors.Is(err, context.Canceled) {
 				slog.Error("Consumer loop error", "error", err)
@@ -136,7 +97,7 @@ func main() {
 	}()
 
 	// produce sample messages
-	go produceSampleMessages(ctx, producerAdapter, topic)
+	go produceSampleMessages(client, topic)
 
 	// wait for shutdown signal
 	sigterm := make(chan os.Signal, 1)
@@ -144,7 +105,6 @@ func main() {
 	<-sigterm
 	slog.Info("Shutting down...")
 
-	// cancel context to stop consumer loop before closing client
 	cancel()
 	wg.Wait()
 }
@@ -176,7 +136,13 @@ func (h *OrderHandler) Handle(_ context.Context, msg resilience.Message) error {
 	return nil
 }
 
-func produceSampleMessages(ctx context.Context, producer resilience.Producer, topic string) {
+func produceSampleMessages(client sarama.Client, topic string) {
+	producer, err := sarama.NewSyncProducerFromClient(client)
+	if err != nil {
+		slog.Error("Failed to create sample producer", "error", err)
+		return
+	}
+
 	messages := []struct {
 		key, val string
 	}{
@@ -186,63 +152,14 @@ func produceSampleMessages(ctx context.Context, producer resilience.Producer, to
 	}
 
 	for _, m := range messages {
-		msg := &SimpleMessage{
-			topic:     topic,
-			key:       []byte(m.key),
-			value:     []byte(m.val),
-			timestamp: time.Now(),
+		msg := &sarama.ProducerMessage{
+			Topic: topic,
+			Key:   sarama.StringEncoder(m.key),
+			Value: sarama.StringEncoder(m.val),
 		}
 		slog.Info("Producing message", "key", m.key, "value", m.val)
-		if err := producer.Produce(ctx, topic, msg); err != nil {
+		if _, _, err := producer.SendMessage(msg); err != nil {
 			slog.Error("Failed to produce", "key", m.key, "error", err)
 		}
 	}
-}
-
-// SimpleMessage implements resilience.Message interface
-type SimpleMessage struct {
-	topic     string
-	key       []byte
-	value     []byte
-	timestamp time.Time
-}
-
-func (m *SimpleMessage) Topic() string        { return m.topic }
-func (m *SimpleMessage) Partition() int32     { return 0 }
-func (m *SimpleMessage) Offset() int64        { return 0 }
-func (m *SimpleMessage) Key() []byte          { return m.key }
-func (m *SimpleMessage) Value() []byte        { return m.value }
-func (m *SimpleMessage) Timestamp() time.Time { return m.timestamp }
-func (m *SimpleMessage) Headers() resilience.Headers {
-	return &SimpleHeaders{data: make(map[string][]byte)}
-}
-
-// SimpleHeaders implements resilience.Headers interface
-type SimpleHeaders struct {
-	data map[string][]byte
-}
-
-func (h *SimpleHeaders) Get(key string) ([]byte, bool) {
-	v, ok := h.data[key]
-	return v, ok
-}
-
-func (h *SimpleHeaders) Set(key string, value []byte) {
-	h.data[key] = value
-}
-
-func (h *SimpleHeaders) Delete(key string) {
-	delete(h.data, key)
-}
-
-func (h *SimpleHeaders) All() map[string][]byte {
-	return h.data
-}
-
-func (h *SimpleHeaders) Clone() resilience.Headers {
-	newData := make(map[string][]byte)
-	for k, v := range h.data {
-		newData[k] = v
-	}
-	return &SimpleHeaders{data: newData}
 }
