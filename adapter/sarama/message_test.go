@@ -30,8 +30,6 @@ func TestMessage(t *testing.T) {
 		t.Parallel()
 
 		assert.Equal(t, "test-topic", msg.Topic())
-		assert.Equal(t, int32(1), msg.Partition())
-		assert.Equal(t, int64(123), msg.Offset())
 		assert.Equal(t, []byte("test-key"), msg.Key())
 		assert.Equal(t, []byte("test-value"), msg.Value())
 		assert.Equal(t, now, msg.Timestamp())

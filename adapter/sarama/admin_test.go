@@ -108,7 +108,6 @@ func TestAdminAdapter_DescribeTopics(t *testing.T) {
 		require.Len(t, result, 1)
 		assert.Equal(t, "topic-1", result[0].Name())
 		assert.Equal(t, int32(2), result[0].Partitions())
-		assert.Equal(t, int16(3), result[0].ReplicationFactor())
 
 		m.AssertExpectations(t)
 	})

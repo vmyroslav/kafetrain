@@ -25,6 +25,11 @@ import (
 func setupKafkaContainer(t *testing.T, ctx context.Context) (string, func()) {
 	t.Helper()
 
+	// Use shared container if available (started by TestMain)
+	if sharedBroker != "" {
+		return sharedBroker, func() {}
+	}
+
 	kafkaContainer, err := kafka.Run(ctx,
 		"confluentinc/confluent-local:7.6.0",
 		kafka.WithClusterID("test-cluster"),
@@ -41,6 +46,29 @@ func setupKafkaContainer(t *testing.T, ctx context.Context) (string, func()) {
 	}
 
 	return brokers[0], cleanup
+}
+
+// setupIsolatedKafkaContainer starts a new, isolated Kafka container and returns the broker address and the container instance.
+// Use this for tests that need to control the container lifecycle (e.g. stop/start/restart).
+func setupIsolatedKafkaContainer(t *testing.T, ctx context.Context) (string, *kafka.KafkaContainer, func()) {
+	t.Helper()
+
+	kafkaContainer, err := kafka.Run(ctx,
+		"confluentinc/confluent-local:7.6.0",
+		kafka.WithClusterID("test-cluster"),
+	)
+	require.NoError(t, err, "failed to start isolated Kafka container")
+
+	brokers, err := kafkaContainer.Brokers(ctx)
+	require.NoError(t, err, "failed to get Kafka brokers")
+
+	cleanup := func() {
+		if err := kafkaContainer.Terminate(ctx); err != nil {
+			t.Logf("failed to terminate isolated Kafka container: %v", err)
+		}
+	}
+
+	return brokers[0], kafkaContainer, cleanup
 }
 
 // produceTestMessage produces a message to the given topic.
