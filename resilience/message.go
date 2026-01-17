@@ -230,8 +230,8 @@ func GetHeaderValue[T any](h *HeaderList, key string) (T, bool) {
 
 // SetHeader updates or adds a header with the given key and value.
 // Supported types: string, int, time.Time
-// Panics if an unsupported type is provided.
-func SetHeader[T any](h *HeaderList, key string, value T) {
+// Returns an error if an unsupported type is provided.
+func SetHeader[T any](h *HeaderList, key string, value T) error {
 	var valStr string
 
 	// convert T to string based on its type
@@ -242,9 +242,8 @@ func SetHeader[T any](h *HeaderList, key string, value T) {
 		valStr = strconv.Itoa(v)
 	case time.Time:
 		valStr = strconv.FormatInt(v.Unix(), 10)
-		// TODO: don't panic here, return error instead
 	default:
-		panic(fmt.Sprintf("SetHeader: unsupported type %T (use string, int, or time.Time)", value))
+		return fmt.Errorf("SetHeader: unsupported type %T (supported: string, int, time.Time)", value)
 	}
 
 	keyBytes := []byte(key)
@@ -253,7 +252,7 @@ func SetHeader[T any](h *HeaderList, key string, value T) {
 	for i, hdr := range *h {
 		if bytes.Equal(hdr.Key, keyBytes) {
 			(*h)[i].Value = []byte(valStr)
-			return
+			return nil
 		}
 	}
 
@@ -262,4 +261,6 @@ func SetHeader[T any](h *HeaderList, key string, value T) {
 		Key:   keyBytes,
 		Value: []byte(valStr),
 	})
+
+	return nil
 }

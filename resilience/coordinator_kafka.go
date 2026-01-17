@@ -24,7 +24,8 @@ type KafkaStateCoordinator struct {
 	instanceID      string
 }
 
-// TODO: add a seprate smaller config struct for coordinator only
+// NewKafkaStateCoordinator creates a coordinator using a compacted Kafka topic for distributed state.
+// Note: Consider extracting coordinator-specific config fields if the Config struct grows too large.
 func NewKafkaStateCoordinator(
 	cfg *Config,
 	logger Logger,
@@ -211,9 +212,11 @@ func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic s
 		}
 	}
 
+	// segment.ms=100 ensures fast compaction for lock state visibility.
+	// Lower values = faster tombstone propagation, higher CPU usage.
 	return k.admin.CreateTopic(ctx, k.redirectTopic(topic), partitions, 1, map[string]string{
 		"cleanup.policy": "compact",
-		"segment.ms":     "100", // todo: make configurable and find optimal default value
+		"segment.ms":     "100",
 	})
 }
 
@@ -338,7 +341,8 @@ func (k *KafkaStateCoordinator) releaseMessage(ctx context.Context, msg *Interna
 	return k.local.Release(ctx, msg)
 }
 
-// TODO: set ready to use name, do not generate it in coordinator
+// redirectTopic returns the compacted topic name used for lock state.
+// The naming convention follows the pattern: {prefix}_{original_topic}
 func (k *KafkaStateCoordinator) redirectTopic(topic string) string {
 	return k.cfg.RedirectTopicPrefix + "_" + topic
 }

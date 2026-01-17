@@ -19,18 +19,17 @@ func NewConsumerAdapter(cg sarama.ConsumerGroup) resilience.Consumer {
 
 // Consume implements retry.Consumer interface.
 func (c *ConsumerAdapter) Consume(ctx context.Context, topics []string, handler resilience.ConsumerHandler) error {
-	// Create Sarama handler that adapts retry.ConsumerHandler
 	saramaHandler := &consumerGroupHandler{
 		retryHandler: handler,
 	}
 
-	// Start consuming (blocks until context cancelled or error)
+	// Start consuming, the loop is required because Sarama's Consume method returns nil
+	// when a rebalance occurs, necessitating a restart to rejoin the consumer group.
 	for {
 		if err := c.consumerGroup.Consume(ctx, topics, saramaHandler); err != nil {
 			return err
 		}
 
-		// Check if context was cancelled
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -43,7 +42,6 @@ func (c *ConsumerAdapter) Close() error {
 }
 
 // consumerGroupHandler adapts retry.ConsumerHandler to sarama.ConsumerGroupHandler.
-// This is the bridge between kafetrain's library-agnostic handler and Sarama's specific handler.
 type consumerGroupHandler struct {
 	retryHandler resilience.ConsumerHandler
 }
@@ -64,15 +62,13 @@ func (h *consumerGroupHandler) ConsumeClaim(
 	claim sarama.ConsumerGroupClaim,
 ) error {
 	for msg := range claim.Messages() {
-		// Convert Sarama message to retry.Message
 		retryMsg := NewMessage(msg)
 
-		// Call the library-agnostic handler
 		if err := h.retryHandler.Handle(session.Context(), retryMsg); err != nil {
 			return err
 		}
 
-		// Mark message as processed
+		// mark message as processed
 		session.MarkMessage(msg, "")
 	}
 

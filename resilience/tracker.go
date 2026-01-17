@@ -328,18 +328,19 @@ func (t *ErrorTracker) publishToRetry(
 		}
 	}
 
-	SetHeader[int](&retryHeaders, HeaderRetryAttempt, nextAttempt)
-	SetHeader[int](&retryHeaders, HeaderRetryMax, t.cfg.MaxRetries)
-	SetHeader[time.Time](&retryHeaders, HeaderRetryNextTime, nextRetryTime)
-	SetHeader[time.Time](&retryHeaders, HeaderRetryOriginalTime, originalTime)
+	// All SetHeader calls below use supported types, so errors are impossible
+	_ = SetHeader[int](&retryHeaders, HeaderRetryAttempt, nextAttempt)
+	_ = SetHeader[int](&retryHeaders, HeaderRetryMax, t.cfg.MaxRetries)
+	_ = SetHeader[time.Time](&retryHeaders, HeaderRetryNextTime, nextRetryTime)
+	_ = SetHeader[time.Time](&retryHeaders, HeaderRetryOriginalTime, originalTime)
 
 	if lastError != nil {
-		SetHeader[string](&retryHeaders, HeaderRetryReason, lastError.Error())
+		_ = SetHeader[string](&retryHeaders, HeaderRetryReason, lastError.Error())
 	}
 
-	SetHeader[string](&retryHeaders, HeaderID, id)
-	SetHeader[string](&retryHeaders, HeaderRetry, "true")
-	SetHeader[string](&retryHeaders, HeaderTopic, originalTopic)
+	_ = SetHeader[string](&retryHeaders, HeaderID, id)
+	_ = SetHeader[string](&retryHeaders, HeaderRetry, "true")
+	_ = SetHeader[string](&retryHeaders, HeaderTopic, originalTopic)
 
 	// Create InternalMessage directly
 	retryMsg := &InternalMessage{
@@ -377,14 +378,14 @@ func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg Message, lastError err
 		}
 	}
 
-	// Add DLQ metadata headers
-	SetHeader[string](&dlqHeaders, "x-dlq-reason", lastError.Error())
-	SetHeader[time.Time](&dlqHeaders, "x-dlq-timestamp", time.Now())
-	SetHeader[string](&dlqHeaders, "x-dlq-source-topic", originalTopic)
-	SetHeader[int](&dlqHeaders, "x-dlq-retry-attempts", attempt)
+	// Add DLQ metadata headers (all use supported types, so errors are impossible)
+	_ = SetHeader[string](&dlqHeaders, "x-dlq-reason", lastError.Error())
+	_ = SetHeader[time.Time](&dlqHeaders, "x-dlq-timestamp", time.Now())
+	_ = SetHeader[string](&dlqHeaders, "x-dlq-source-topic", originalTopic)
+	_ = SetHeader[int](&dlqHeaders, "x-dlq-retry-attempts", attempt)
 
 	if !originalTime.IsZero() {
-		SetHeader[time.Time](&dlqHeaders, "x-dlq-original-failure-time", originalTime)
+		_ = SetHeader[time.Time](&dlqHeaders, "x-dlq-original-failure-time", originalTime)
 	}
 
 	dlqMsg := &InternalMessage{

@@ -20,7 +20,6 @@ func NewAdminAdapter(admin sarama.ClusterAdmin) resilience.Admin {
 }
 
 // NewAdminAdapterFromClient creates a retry.Admin from a Sarama Client.
-// Convenience constructor that creates ClusterAdmin internally.
 func NewAdminAdapterFromClient(client sarama.Client) (resilience.Admin, error) {
 	admin, err := sarama.NewClusterAdminFromClient(client)
 	if err != nil {
@@ -30,7 +29,7 @@ func NewAdminAdapterFromClient(client sarama.Client) (resilience.Admin, error) {
 	return NewAdminAdapter(admin), nil
 }
 
-// CreateTopic implements retry.Admin interface.
+// CreateTopic creates a topic with the given specifications.
 func (a *AdminAdapter) CreateTopic(
 	_ context.Context,
 	name string,
@@ -67,7 +66,7 @@ func (a *AdminAdapter) CreateTopic(
 	return nil
 }
 
-// DescribeTopics implements retry.Admin interface.
+// DescribeTopics retrieves metadata for the specified topics.
 func (a *AdminAdapter) DescribeTopics(_ context.Context, topics []string) ([]resilience.TopicMetadata, error) {
 	metadata, err := a.admin.DescribeTopics(topics)
 	if err != nil {
@@ -89,7 +88,7 @@ func (a *AdminAdapter) DescribeTopics(_ context.Context, topics []string) ([]res
 	return result, nil
 }
 
-// DeleteConsumerGroup implements retry.Admin interface.
+// DeleteConsumerGroup deletes the specified consumer group.
 func (a *AdminAdapter) DeleteConsumerGroup(_ context.Context, groupID string) error {
 	err := a.admin.DeleteConsumerGroup(groupID)
 	if err != nil {
@@ -99,7 +98,7 @@ func (a *AdminAdapter) DeleteConsumerGroup(_ context.Context, groupID string) er
 	return nil
 }
 
-// Close implements retry.Admin interface.
+// Close closes the admin connection.
 func (a *AdminAdapter) Close() error {
 	return a.admin.Close()
 }
