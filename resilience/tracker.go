@@ -100,7 +100,7 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 
 	// create DLQ topic
 	g.Go(func() error {
-		if err := t.admin.CreateTopic(ctx, t.dlqTopic(topic), partitions, 1, map[string]string{
+		if err := t.admin.CreateTopic(ctx, t.DLQTopic(topic), partitions, 1, map[string]string{
 			"cleanup.policy": "delete",
 			"retention.ms":   "-1", // infinite
 		}); err != nil {
@@ -172,11 +172,6 @@ func (h *retryWorkerHandler) Handle(ctx context.Context, msg Message) error {
 	return h.t.Free(ctx, msg)
 }
 
-// GetRedirectTopic returns the redirect topic name for a given primary topic.
-func (t *ErrorTracker) GetRedirectTopic(topic string) string {
-	return t.RedirectTopic(topic)
-}
-
 // StartTracking starts the coordination layer (control plane) for the topic.
 // This is required for Redirect/Free/IsInRetryChain to work.
 func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
@@ -186,11 +181,6 @@ func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
 	}
 
 	return t.coordinator.Start(ctx, topic)
-}
-
-// GetDLQTopic returns the DLQ topic name for a given primary topic.
-func (t *ErrorTracker) GetDLQTopic(topic string) string {
-	return t.dlqTopic(topic)
 }
 
 // IsInRetryChain checks if a message is already in the retry chain.
@@ -246,7 +236,7 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 
 	// Check if max retries would be exceeded
 	if currentAttempt >= t.cfg.MaxRetries {
-		return t.HandleMaxRetriesExceeded(ctx, msg, currentAttempt, t.cfg.MaxRetries)
+		return t.handleMaxRetriesExceeded(ctx, msg, currentAttempt, t.cfg.MaxRetries)
 	}
 
 	originalTime, ok := GetHeaderValue[time.Time](&msg.HeaderData, HeaderRetryOriginalTime)
@@ -364,20 +354,22 @@ func (t *ErrorTracker) publishToRetry(
 }
 
 // SendToDLQ sends a message that has exceeded max retries to the Dead Letter Queue.
-func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg *InternalMessage, lastError error) error {
+func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg Message, lastError error) error {
+	internalMsg := NewFromMessage(msg)
+
 	// Get original topic from headers
-	originalTopic, ok := GetHeaderValue[string](&msg.HeaderData, HeaderTopic)
+	originalTopic, ok := GetHeaderValue[string](&internalMsg.HeaderData, HeaderTopic)
 	if !ok {
-		originalTopic = msg.topic
+		originalTopic = internalMsg.topic
 	}
 
 	// Get retry metadata
-	attempt, _ := GetHeaderValue[int](&msg.HeaderData, HeaderRetryAttempt)
-	originalTime, _ := GetHeaderValue[time.Time](&msg.HeaderData, HeaderRetryOriginalTime)
+	attempt, _ := GetHeaderValue[int](&internalMsg.HeaderData, HeaderRetryAttempt)
+	originalTime, _ := GetHeaderValue[time.Time](&internalMsg.HeaderData, HeaderRetryOriginalTime)
 
 	// Copy original message headers (excluding retry headers)
-	dlqHeaders := make(HeaderList, 0, len(msg.HeaderData)+4)
-	for _, h := range msg.HeaderData {
+	dlqHeaders := make(HeaderList, 0, len(internalMsg.HeaderData)+4)
+	for _, h := range internalMsg.HeaderData {
 		key := string(h.Key)
 		if key != HeaderRetryAttempt && key != HeaderRetryMax &&
 			key != HeaderRetryNextTime && key != HeaderID && key != HeaderRetry {
@@ -396,9 +388,9 @@ func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg *InternalMessage, last
 	}
 
 	dlqMsg := &InternalMessage{
-		topic:         t.dlqTopic(originalTopic),
-		KeyData:       msg.KeyData,
-		Payload:       msg.Payload,
+		topic:         t.DLQTopic(originalTopic),
+		KeyData:       internalMsg.KeyData,
+		Payload:       internalMsg.Payload,
 		HeaderData:    dlqHeaders,
 		TimestampData: time.Now(),
 	}
@@ -422,11 +414,11 @@ func (t *ErrorTracker) RedirectTopic(topic string) string {
 	return t.cfg.RedirectTopicPrefix + "_" + topic
 }
 
-func (t *ErrorTracker) dlqTopic(topic string) string {
+func (t *ErrorTracker) DLQTopic(topic string) string {
 	return t.cfg.DLQTopicPrefix + "_" + topic
 }
 
-func (t *ErrorTracker) HandleMaxRetriesExceeded(ctx context.Context, message *InternalMessage, currentAttempt, maxRetries int) error {
+func (t *ErrorTracker) handleMaxRetriesExceeded(ctx context.Context, message *InternalMessage, currentAttempt, maxRetries int) error {
 	t.logger.Warn("max retries exceeded, sending to DLQ",
 		"topic", message.topic,
 		"current_attempt", currentAttempt,

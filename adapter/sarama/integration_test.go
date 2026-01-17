@@ -588,7 +588,7 @@ func TestIntegration_ChainRetry(t *testing.T) {
 	require.NoError(t, err, "failed to start tracking")
 
 	retryTopic := tracker.RetryTopic(topic)
-	redirectTopic := tracker.GetRedirectTopic(topic)
+	redirectTopic := tracker.RedirectTopic(topic)
 
 	logger.Info("tracker started",
 		zap.String("topic", topic),
@@ -826,7 +826,7 @@ func TestIntegration_DLQ(t *testing.T) {
 	require.NoError(t, err, "failed to start tracking")
 
 	retryTopic := tracker.RetryTopic(topic)
-	dlqTopic := tracker.GetDLQTopic(topic)
+	dlqTopic := tracker.DLQTopic(topic)
 
 	logger.Info("tracker started",
 		zap.String("topic", topic),
@@ -1136,7 +1136,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 	require.NoError(t, err, "failed to start tracking")
 
 	retryTopic := tracker.RetryTopic(topic)
-	dlqTopic := tracker.GetDLQTopic(topic)
+	dlqTopic := tracker.DLQTopic(topic)
 
 	// Create handler
 	handler := &dlqFreeTestHandler{
