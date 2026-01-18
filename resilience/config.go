@@ -40,6 +40,10 @@ type Config struct {
 	// StateRestoreIdleTimeoutMs is the duration of inactivity on the redirect topic
 	// that indicates restoration is complete (default: 5000ms).
 	StateRestoreIdleTimeoutMs int64
+
+	// DisableAutoTopicCreation prevents the library from attempting to create topics.
+	// If true, topics must be created beforehand. The library will verify existence.
+	DisableAutoTopicCreation bool
 }
 
 // NewDefaultConfig creates a Config with sensible defaults.
@@ -54,5 +58,6 @@ func NewDefaultConfig() *Config {
 		FreeOnDLQ:                 false,
 		StateRestoreTimeoutMs:     30000, // 30 seconds
 		StateRestoreIdleTimeoutMs: 5000,  // 5 seconds
+		DisableAutoTopicCreation:  false,
 	}
 }

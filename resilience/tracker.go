@@ -63,6 +63,33 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string, handler Consumer
 // ensureTopicsExist creates retry and DLQ topics if they don't exist.
 // Queries primary topic partition count and creates topics with matching partitions.
 func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) error {
+	if t.cfg.DisableAutoTopicCreation {
+		retryTopic := t.RetryTopic(topic)
+		dlqTopic := t.DLQTopic(topic)
+
+		metadata, err := t.admin.DescribeTopics(ctx, []string{retryTopic, dlqTopic})
+		if err != nil {
+			return fmt.Errorf("failed to verify existence of topics (auto-creation disabled): %w", err)
+		}
+
+		foundRetry := false
+		foundDLQ := false
+		for _, m := range metadata {
+			if m.Name() == retryTopic {
+				foundRetry = true
+			}
+			if m.Name() == dlqTopic {
+				foundDLQ = true
+			}
+		}
+
+		if !foundRetry || !foundDLQ {
+			return fmt.Errorf("required topics missing (auto-creation disabled): retry_exists=%v, dlq_exists=%v", foundRetry, foundDLQ)
+		}
+
+		return nil
+	}
+
 	// determine partition count
 	partitions := t.cfg.RetryTopicPartitions
 
