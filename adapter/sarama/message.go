@@ -18,6 +18,16 @@ func NewMessage(msg *sarama.ConsumerMessage) resilience.Message {
 	return &Message{ConsumerMessage: msg}
 }
 
+// Partition implements retry.Message interface.
+func (m *Message) Partition() int32 {
+	return m.ConsumerMessage.Partition
+}
+
+// Offset implements retry.Message interface.
+func (m *Message) Offset() int64 {
+	return m.ConsumerMessage.Offset
+}
+
 // Topic implements retry.Message interface.
 func (m *Message) Topic() string {
 	return m.ConsumerMessage.Topic

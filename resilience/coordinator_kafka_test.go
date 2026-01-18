@@ -29,6 +29,16 @@ func createMockRedirectMsg(topic, key, coordinatorID string, isLock bool) *Inter
 	}
 }
 
+type mockTopicMetadata struct {
+	name       string
+	partitions int32
+	offsets    map[int32]int64
+}
+
+func (m *mockTopicMetadata) Name() string                      { return m.name }
+func (m *mockTopicMetadata) Partitions() int32                 { return m.partitions }
+func (m *mockTopicMetadata) PartitionOffsets() map[int32]int64 { return m.offsets }
+
 func TestKafkaStateCoordinator_Acquire(t *testing.T) {
 	// Setup Mocks
 	mockProducer := &ProducerMock{
@@ -145,7 +155,13 @@ func TestKafkaStateCoordinator_Release(t *testing.T) {
 func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 	mockAdmin := &AdminMock{
 		DescribeTopicsFunc: func(ctx context.Context, topics []string) ([]TopicMetadata, error) {
-			return []TopicMetadata{}, nil
+			return []TopicMetadata{
+				&mockTopicMetadata{
+					name:       "redirect_orders",
+					partitions: 1,
+					offsets:    map[int32]int64{0: 10},
+				},
+			}, nil
 		},
 		CreateTopicFunc: func(ctx context.Context, name string, partitions int32, replicationFactor int16, config map[string]string) error {
 			return nil
@@ -169,6 +185,8 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 					{Key: []byte("key"), Value: []byte("order-locked")},
 				},
 			}
+			msg.SetPartition(0)
+			msg.SetOffset(9) // Last offset (target is 10)
 			handler.Handle(ctx, msg)
 
 			return nil
@@ -196,9 +214,8 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 	}
 
 	cfg := &Config{
-		RedirectTopicPrefix:       "redirect",
-		StateRestoreTimeoutMs:     100,
-		StateRestoreIdleTimeoutMs: 50,
+		RedirectTopicPrefix:   "redirect",
+		StateRestoreTimeoutMs: 100,
 	}
 
 	coordinator := NewKafkaStateCoordinator(

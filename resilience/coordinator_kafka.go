@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sync/atomic"
+	"sync"
 	"time"
 
 	"github.com/avast/retry-go/v4"
@@ -221,6 +221,33 @@ func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic s
 }
 
 func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) error {
+	// 1. Get High Water Marks for the redirect topic
+	metadata, err := k.admin.DescribeTopics(ctx, []string{k.redirectTopic(topic)})
+	if err != nil {
+		return fmt.Errorf("failed to describe redirect topic for restore: %w", err)
+	}
+
+	if len(metadata) == 0 {
+		k.logger.Debug("redirect topic metadata not found, skipping restore")
+		return nil
+	}
+
+	targetOffsets := metadata[0].PartitionOffsets()
+
+	// 2. Check if there's anything to restore
+	hasData := false
+	for _, offset := range targetOffsets {
+		if offset > 0 {
+			hasData = true
+			break
+		}
+	}
+
+	if !hasData {
+		k.logger.Debug("redirect topic is empty, skipping restore")
+		return nil
+	}
+
 	refillCfg := *k.cfg
 	refillCfg.GroupID = uuid.New().String()
 
@@ -228,53 +255,42 @@ func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) 
 	if err != nil {
 		return err
 	}
+	defer func() {
+		// clean up ephemeral group
+		go func() {
+			_ = k.admin.DeleteConsumerGroup(context.Background(), refillCfg.GroupID)
+		}()
+	}()
 
+	// 3. Consume until we reach HWM
+	// We use a separate context for the refill loop that we cancel when done
+	refillCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Safety timeout in case we never reach HWM (e.g. if HWM moves while consuming?)
+	// Ideally, we should read until the *snapshot* of HWM we took.
 	timeout := time.Duration(k.cfg.StateRestoreTimeoutMs) * time.Millisecond
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
 
-	refillCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	idleTimeout := time.Duration(k.cfg.StateRestoreIdleTimeoutMs) * time.Millisecond
-	if idleTimeout == 0 {
-		idleTimeout = 5 * time.Second
-	}
-
-	lastActivity := new(int64)
-	atomic.StoreInt64(lastActivity, time.Now().UnixNano())
+	// Wrap context with timeout
+	refillCtx, cancelTimeout := context.WithTimeout(refillCtx, timeout)
+	defer cancelTimeout()
 
 	handler := &redirectFillHandler{
-		k:            k,
-		lastActivity: lastActivity,
+		k:               k,
+		targetOffsets:   targetOffsets,
+		consumedOffsets: make(map[int32]int64),
+		cancel:          cancel, // Cancel the *outer* refillCtx (well, the one we passed to Consume)
 	}
 
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-refillCtx.Done():
-				return
-			case <-ticker.C:
-				last := atomic.LoadInt64(lastActivity)
-				if time.Since(time.Unix(0, last)) > idleTimeout {
-					cancel()
-					return
-				}
-			}
-		}
-	}()
-
-	_ = refillConsumer.Consume(refillCtx, []string{k.redirectTopic(topic)}, handler)
+	err = refillConsumer.Consume(refillCtx, []string{k.redirectTopic(topic)}, handler)
 	refillConsumer.Close()
 
-	// clean up ephemeral group
-	go func() {
-		_ = k.admin.DeleteConsumerGroup(context.Background(), refillCfg.GroupID)
-	}()
+	if err != nil && !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("restore failed: %w", err)
+	}
 
 	return nil
 }
@@ -348,13 +364,46 @@ func (k *KafkaStateCoordinator) redirectTopic(topic string) string {
 }
 
 type redirectFillHandler struct {
-	k            *KafkaStateCoordinator
-	lastActivity *int64
+	k               *KafkaStateCoordinator
+	targetOffsets   map[int32]int64
+	consumedOffsets map[int32]int64
+	mu              sync.Mutex
+	cancel          context.CancelFunc
 }
 
 func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
-	atomic.StoreInt64(r.lastActivity, time.Now().UnixNano())
-	return r.k.processRedirectMessage(ctx, msg)
+	if err := r.k.processRedirectMessage(ctx, msg); err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	p := msg.Partition()
+	r.consumedOffsets[p] = msg.Offset()
+
+	// Check if all partitions have reached their target offset
+	allDone := true
+	for p, target := range r.targetOffsets {
+		if target == 0 {
+			// Empty partition, effectively done
+			continue
+		}
+
+		consumed, ok := r.consumedOffsets[p]
+		// target is the HWM (next offset to be written).
+		// So if we processed (target - 1), we are up to date.
+		if !ok || consumed < target-1 {
+			allDone = false
+			break
+		}
+	}
+
+	if allDone {
+		r.cancel()
+	}
+
+	return nil
 }
 
 type RedirectHandler struct {

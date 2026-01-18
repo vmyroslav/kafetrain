@@ -43,7 +43,8 @@ const (
 // Message represents a Kafka message
 type Message interface {
 	Topic() string
-
+	Partition() int32
+	Offset() int64
 	Key() []byte
 	Value() []byte
 	Headers() Headers
@@ -75,6 +76,8 @@ type InternalMessage struct {
 	KeyData       []byte
 	Payload       []byte
 	HeaderData    HeaderList
+	partition     int32
+	offset        int64
 }
 
 func NewFromMessage(msg Message) *InternalMessage {
@@ -85,6 +88,8 @@ func NewFromMessage(msg Message) *InternalMessage {
 
 	return &InternalMessage{
 		topic:         msg.Topic(),
+		partition:     msg.Partition(),
+		offset:        msg.Offset(),
 		KeyData:       msg.Key(),
 		Payload:       msg.Value(),
 		HeaderData:    headers,
@@ -100,6 +105,26 @@ func (m *InternalMessage) Topic() string {
 // SetTopic sets the topic name of the message.
 func (m *InternalMessage) SetTopic(topic string) {
 	m.topic = topic
+}
+
+// Partition returns the partition of the message.
+func (m *InternalMessage) Partition() int32 {
+	return m.partition
+}
+
+// SetPartition sets the partition of the message.
+func (m *InternalMessage) SetPartition(partition int32) {
+	m.partition = partition
+}
+
+// Offset returns the offset of the message.
+func (m *InternalMessage) Offset() int64 {
+	return m.offset
+}
+
+// SetOffset sets the offset of the message.
+func (m *InternalMessage) SetOffset(offset int64) {
+	m.offset = offset
 }
 
 // Value returns the message payload.

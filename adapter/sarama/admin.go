@@ -11,22 +11,21 @@ import (
 
 // AdminAdapter wraps sarama.ClusterAdmin to implement retry.Admin interface.
 type AdminAdapter struct {
-	admin sarama.ClusterAdmin
+	admin  sarama.ClusterAdmin
+	client sarama.Client
 }
 
-// NewAdminAdapter creates a retry.Admin from a Sarama ClusterAdmin.
-func NewAdminAdapter(admin sarama.ClusterAdmin) resilience.Admin {
-	return &AdminAdapter{admin: admin}
-}
-
-// NewAdminAdapterFromClient creates a retry.Admin from a Sarama Client.
-func NewAdminAdapterFromClient(client sarama.Client) (resilience.Admin, error) {
+// NewAdminAdapter creates a retry.Admin from a Sarama Client.
+func NewAdminAdapter(client sarama.Client) (resilience.Admin, error) {
 	admin, err := sarama.NewClusterAdminFromClient(client)
 	if err != nil {
 		return nil, err
 	}
 
-	return NewAdminAdapter(admin), nil
+	return &AdminAdapter{
+		admin:  admin,
+		client: client,
+	}, nil
 }
 
 // CreateTopic creates a topic with the given specifications.
@@ -68,6 +67,7 @@ func (a *AdminAdapter) CreateTopic(
 
 // DescribeTopics retrieves metadata for the specified topics.
 func (a *AdminAdapter) DescribeTopics(_ context.Context, topics []string) ([]resilience.TopicMetadata, error) {
+	// get metadata
 	metadata, err := a.admin.DescribeTopics(topics)
 	if err != nil {
 		return nil, err
@@ -79,9 +79,20 @@ func (a *AdminAdapter) DescribeTopics(_ context.Context, topics []string) ([]res
 			continue
 		}
 
+		// get offsets
+		offsets := make(map[int32]int64)
+		for _, p := range md.Partitions {
+			off, err := a.client.GetOffset(md.Name, p.ID, sarama.OffsetNewest)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get offset for topic %s partition %d: %w", md.Name, p.ID, err)
+			}
+			offsets[p.ID] = off
+		}
+
 		result = append(result, &topicMetadata{
 			name:       md.Name,
 			partitions: int32(len(md.Partitions)),
+			offsets:    offsets,
 		})
 	}
 
@@ -107,7 +118,9 @@ func (a *AdminAdapter) Close() error {
 type topicMetadata struct {
 	name       string
 	partitions int32
+	offsets    map[int32]int64
 }
 
-func (t *topicMetadata) Name() string      { return t.name }
-func (t *topicMetadata) Partitions() int32 { return t.partitions }
+func (t *topicMetadata) Name() string                      { return t.name }
+func (t *topicMetadata) Partitions() int32                 { return t.partitions }
+func (t *topicMetadata) PartitionOffsets() map[int32]int64 { return t.offsets }

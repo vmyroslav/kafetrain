@@ -93,4 +93,7 @@ type TopicMetadata interface {
 
 	// Partitions returns the number of partitions.
 	Partitions() int32
+
+	// PartitionOffsets returns the newest offset (High Water Mark) for each partition.
+	PartitionOffsets() map[int32]int64
 }

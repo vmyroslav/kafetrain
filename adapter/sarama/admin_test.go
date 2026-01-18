@@ -18,7 +18,7 @@ func TestAdminAdapter_CreateTopic(t *testing.T) {
 		t.Parallel()
 
 		m := new(mockClusterAdmin)
-		adapter := NewAdminAdapter(m)
+		adapter := &AdminAdapter{admin: m}
 
 		// use a matcher for the TopicDetail because map iteration order is random
 		m.On("CreateTopic", "test-topic", mock.MatchedBy(func(d *sarama.TopicDetail) bool {
@@ -44,7 +44,7 @@ func TestAdminAdapter_CreateTopic(t *testing.T) {
 	t.Run("idempotency - topic already exists", func(t *testing.T) {
 		t.Parallel()
 		m := new(mockClusterAdmin)
-		adapter := NewAdminAdapter(m)
+		adapter := &AdminAdapter{admin: m}
 
 		topicErr := &sarama.TopicError{
 			Err: sarama.ErrTopicAlreadyExists,
@@ -63,7 +63,7 @@ func TestAdminAdapter_CreateTopic(t *testing.T) {
 		t.Parallel()
 
 		m := new(mockClusterAdmin)
-		adapter := NewAdminAdapter(m)
+		adapter := &AdminAdapter{admin: m}
 
 		expectedErr := errors.New("network error")
 		m.On("CreateTopic", "test-topic", mock.Anything, false).Return(expectedErr)
@@ -82,7 +82,8 @@ func TestAdminAdapter_DescribeTopics(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		t.Parallel()
 		m := new(mockClusterAdmin)
-		adapter := NewAdminAdapter(m)
+		client := new(mockClient)
+		adapter := &AdminAdapter{admin: m, client: client}
 
 		saramaMetadata := []*sarama.TopicMetadata{
 			{
@@ -101,6 +102,9 @@ func TestAdminAdapter_DescribeTopics(t *testing.T) {
 
 		m.On("DescribeTopics", []string{"topic-1", "topic-with-error"}).Return(saramaMetadata, nil)
 
+		client.On("GetOffset", "topic-1", int32(0), sarama.OffsetNewest).Return(int64(100), nil)
+		client.On("GetOffset", "topic-1", int32(1), sarama.OffsetNewest).Return(int64(200), nil)
+
 		result, err := adapter.DescribeTopics(context.Background(), []string{"topic-1", "topic-with-error"})
 		require.NoError(t, err)
 
@@ -109,14 +113,19 @@ func TestAdminAdapter_DescribeTopics(t *testing.T) {
 		assert.Equal(t, "topic-1", result[0].Name())
 		assert.Equal(t, int32(2), result[0].Partitions())
 
+		offsets := result[0].PartitionOffsets()
+		assert.Equal(t, int64(100), offsets[0])
+		assert.Equal(t, int64(200), offsets[1])
+
 		m.AssertExpectations(t)
+		client.AssertExpectations(t)
 	})
 
 	t.Run("failure", func(t *testing.T) {
 		t.Parallel()
 
 		m := new(mockClusterAdmin)
-		adapter := NewAdminAdapter(m)
+		adapter := &AdminAdapter{admin: m}
 
 		m.On("DescribeTopics", []string{"topic-1"}).Return(nil, errors.New("fail"))
 
@@ -133,7 +142,7 @@ func TestAdminAdapter_DeleteConsumerGroup(t *testing.T) {
 		t.Parallel()
 
 		m := new(mockClusterAdmin)
-		adapter := NewAdminAdapter(m)
+		adapter := &AdminAdapter{admin: m}
 
 		m.On("DeleteConsumerGroup", "group-1").Return(nil)
 
@@ -146,7 +155,7 @@ func TestAdminAdapter_DeleteConsumerGroup(t *testing.T) {
 		t.Parallel()
 
 		m := new(mockClusterAdmin)
-		adapter := NewAdminAdapter(m)
+		adapter := &AdminAdapter{admin: m}
 
 		m.On("DeleteConsumerGroup", "group-1").Return(errors.New("fail"))
 
@@ -160,7 +169,7 @@ func TestAdminAdapter_Close(t *testing.T) {
 	t.Parallel()
 
 	m := new(mockClusterAdmin)
-	adapter := NewAdminAdapter(m)
+	adapter := &AdminAdapter{admin: m}
 
 	m.On("Close").Return(nil)
 
@@ -197,4 +206,15 @@ func (m *mockClusterAdmin) DeleteConsumerGroup(group string) error {
 func (m *mockClusterAdmin) Close() error {
 	args := m.Called()
 	return args.Error(0)
+}
+
+// mockClient mocks sarama.Client interface.
+type mockClient struct {
+	mock.Mock
+	sarama.Client
+}
+
+func (m *mockClient) GetOffset(topic string, partitionID int32, time int64) (int64, error) {
+	args := m.Called(topic, partitionID, time)
+	return args.Get(0).(int64), args.Error(1)
 }

@@ -34,7 +34,7 @@ func NewResilienceTracker(
 
 	producerAdapter := NewProducerAdapter(saramaProducer)
 	consumerFactory := NewConsumerFactory(client)
-	adminAdapter, err := NewAdminAdapterFromClient(client)
+	adminAdapter, err := NewAdminAdapter(client)
 	if err != nil {
 		return nil, err
 	}

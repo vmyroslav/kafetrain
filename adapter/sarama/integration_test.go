@@ -113,7 +113,7 @@ func TestIntegration_SaramaAdmin(t *testing.T) {
 	defer client.Close()
 
 	// Create admin adapter
-	admin, err := saramaadapter.NewAdminAdapterFromClient(client)
+	admin, err := saramaadapter.NewAdminAdapter(client)
 	require.NoError(t, err, "failed to create admin adapter")
 	defer admin.Close()
 
@@ -253,7 +253,7 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 	consumerFactory := saramaadapter.NewConsumerFactory(client)
 
 	// Create admin adapter
-	admin, err := saramaadapter.NewAdminAdapterFromClient(client)
+	admin, err := saramaadapter.NewAdminAdapter(client)
 	require.NoError(t, err, "failed to create admin adapter")
 	defer admin.Close()
 
@@ -575,7 +575,7 @@ func TestIntegration_ChainRetry(t *testing.T) {
 
 	producer := saramaadapter.NewProducerAdapter(saramaProducer)
 	consumerFactory := saramaadapter.NewConsumerFactory(client)
-	admin, err := saramaadapter.NewAdminAdapterFromClient(client)
+	admin, err := saramaadapter.NewAdminAdapter(client)
 	require.NoError(t, err, "failed to create admin adapter")
 	defer admin.Close()
 
@@ -812,7 +812,7 @@ func TestIntegration_DLQ(t *testing.T) {
 
 	producer := saramaadapter.NewProducerAdapter(saramaProducer)
 	consumerFactory := saramaadapter.NewConsumerFactory(client)
-	admin, err := saramaadapter.NewAdminAdapterFromClient(client)
+	admin, err := saramaadapter.NewAdminAdapter(client)
 	require.NoError(t, err, "failed to create admin adapter")
 	defer admin.Close()
 
@@ -1122,7 +1122,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 
 	producer := saramaadapter.NewProducerAdapter(saramaProducer)
 	consumerFactory := saramaadapter.NewConsumerFactory(client)
-	admin, err := saramaadapter.NewAdminAdapterFromClient(client)
+	admin, err := saramaadapter.NewAdminAdapter(client)
 	require.NoError(t, err, "failed to create admin adapter")
 	defer admin.Close()
 
