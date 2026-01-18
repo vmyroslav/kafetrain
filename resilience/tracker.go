@@ -328,7 +328,7 @@ func (t *ErrorTracker) publishToRetry(
 		}
 	}
 
-	// All SetHeader calls below use supported types, so errors are impossible
+	// all SetHeader calls below use supported types
 	_ = SetHeader[int](&retryHeaders, HeaderRetryAttempt, nextAttempt)
 	_ = SetHeader[int](&retryHeaders, HeaderRetryMax, t.cfg.MaxRetries)
 	_ = SetHeader[time.Time](&retryHeaders, HeaderRetryNextTime, nextRetryTime)
@@ -342,7 +342,6 @@ func (t *ErrorTracker) publishToRetry(
 	_ = SetHeader[string](&retryHeaders, HeaderRetry, "true")
 	_ = SetHeader[string](&retryHeaders, HeaderTopic, originalTopic)
 
-	// Create InternalMessage directly
 	retryMsg := &InternalMessage{
 		topic:         t.RetryTopic(originalTopic),
 		KeyData:       msg.KeyData,
@@ -379,13 +378,13 @@ func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg Message, lastError err
 	}
 
 	// Add DLQ metadata headers (all use supported types, so errors are impossible)
-	_ = SetHeader[string](&dlqHeaders, "x-dlq-reason", lastError.Error())
-	_ = SetHeader[time.Time](&dlqHeaders, "x-dlq-timestamp", time.Now())
-	_ = SetHeader[string](&dlqHeaders, "x-dlq-source-topic", originalTopic)
-	_ = SetHeader[int](&dlqHeaders, "x-dlq-retry-attempts", attempt)
+	_ = SetHeader[string](&dlqHeaders, HeaderDLQReason, lastError.Error())
+	_ = SetHeader[time.Time](&dlqHeaders, HeaderDLQTimestamp, time.Now())
+	_ = SetHeader[string](&dlqHeaders, HeaderDLQSourceTopic, originalTopic)
+	_ = SetHeader[int](&dlqHeaders, HeaderDLQRetryAttempts, attempt)
 
 	if !originalTime.IsZero() {
-		_ = SetHeader[time.Time](&dlqHeaders, "x-dlq-original-failure-time", originalTime)
+		_ = SetHeader[time.Time](&dlqHeaders, HeaderDLQOriginalFailureTime, originalTime)
 	}
 
 	dlqMsg := &InternalMessage{

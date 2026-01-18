@@ -18,6 +18,16 @@ const (
 	HeaderRetryOriginalTime = "x-retry-original-time"
 	// HeaderRetryReason error message from last failure
 	HeaderRetryReason = "x-retry-reason"
+	// HeaderDLQReason error reason for sending to DLQ
+	HeaderDLQReason = "x-dlq-reason"
+	// HeaderDLQTimestamp timestamp when message was sent to DLQ
+	HeaderDLQTimestamp = "x-dlq-timestamp"
+	// HeaderDLQSourceTopic original topic before DLQ
+	HeaderDLQSourceTopic = "x-dlq-source-topic"
+	// HeaderDLQRetryAttempts number of retries attempted
+	HeaderDLQRetryAttempts = "x-dlq-retry-attempts"
+	// HeaderDLQOriginalFailureTime time of the first failure
+	HeaderDLQOriginalFailureTime = "x-dlq-original-failure-time"
 )
 
 const (

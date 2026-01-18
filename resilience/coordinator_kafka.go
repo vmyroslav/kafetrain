@@ -83,7 +83,7 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 			Value: []byte(originalTopic),
 		},
 		{
-			Key:   []byte("key"),
+			Key:   []byte(HeaderKey),
 			Value: msg.KeyData,
 		},
 		{
