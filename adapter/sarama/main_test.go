@@ -5,6 +5,7 @@ package sarama_test
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"testing"
 
@@ -13,10 +14,19 @@ import (
 
 const kafkaImage = "confluentinc/confluent-local:7.6.0"
 
-var sharedBroker string
+var (
+	sharedBroker string
+	SharedLogger *slog.Logger
+)
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
+
+	// setup shared logger
+	opts := &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}
+	SharedLogger = slog.New(slog.NewTextHandler(os.Stdout, opts))
 
 	// start shared Kafka container
 	kafkaContainer, err := kafka.Run(ctx,

@@ -5,6 +5,7 @@ package sarama_test
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -17,8 +18,6 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/kafka"
 	saramaadapter "github.com/vmyroslav/kafka-resilience/adapter/sarama"
 	"github.com/vmyroslav/kafka-resilience/resilience"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zaptest"
 )
 
 // setupKafkaContainer starts a Kafka container and returns the broker address.
@@ -102,8 +101,6 @@ func TestIntegration_SaramaAdmin(t *testing.T) {
 	broker, cleanup := setupKafkaContainer(t, ctx)
 	defer cleanup()
 
-	logger := zaptest.NewLogger(t, zaptest.Level(zap.DebugLevel))
-
 	// Create Sarama client
 	saramaConfig := sarama.NewConfig()
 	saramaConfig.Version = sarama.V4_1_0_0
@@ -128,17 +125,19 @@ func TestIntegration_SaramaAdmin(t *testing.T) {
 		})
 		require.NoError(t, err, "failed to create topic")
 
-		// Verify topic was created by describing it
-		metadata, err := admin.DescribeTopics(ctx, []string{testTopic})
-		require.NoError(t, err, "failed to describe topic")
-		require.Len(t, metadata, 1, "expected 1 topic metadata")
+		// Verify topic was created by describing it (with retry for metadata propagation)
+		var metadata []resilience.TopicMetadata
+		assert.Eventually(t, func() bool {
+			metadata, err = admin.DescribeTopics(ctx, []string{testTopic})
+			return err == nil && len(metadata) == 1
+		}, 10*time.Second, 500*time.Millisecond, "failed to describe topic or topic not found")
 
 		assert.Equal(t, testTopic, metadata[0].Name())
 		assert.Equal(t, int32(3), metadata[0].Partitions())
 
-		logger.Info("topic created successfully",
-			zap.String("topic", testTopic),
-			zap.Int32("partitions", metadata[0].Partitions()),
+		SharedLogger.Info("topic created successfully",
+			"topic", testTopic,
+			"partitions", metadata[0].Partitions(),
 		)
 	})
 
@@ -203,7 +202,7 @@ func TestIntegration_SaramaAdmin(t *testing.T) {
 		err = admin.DeleteConsumerGroup(ctx, groupID)
 		assert.NoError(t, err, "failed to delete consumer group")
 
-		logger.Info("consumer group deleted successfully", zap.String("group_id", groupID))
+		SharedLogger.Info("consumer group deleted successfully", "group_id", groupID)
 	})
 }
 
@@ -215,8 +214,6 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 
 	broker, cleanup := setupKafkaContainer(t, ctx)
 	defer cleanup()
-
-	logger := zaptest.NewLogger(t, zaptest.Level(zap.DebugLevel))
 
 	topic := fmt.Sprintf("test-adapter-%d", time.Now().UnixNano())
 	groupID := fmt.Sprintf("test-adapter-group-%d", time.Now().UnixNano())
@@ -258,7 +255,7 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 	defer admin.Close()
 
 	// Create logger adapter
-	retryLogger := saramaadapter.NewZapLogger(logger)
+	retryLogger := SharedLogger
 
 	// Create config
 	cfg := resilience.NewDefaultConfig()
@@ -294,14 +291,14 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 	err = tracker.StartTracking(ctx, topic)
 	require.NoError(t, err, "failed to start tracking")
 
-	logger.Info("tracker started, topics should be created")
+	SharedLogger.Info("tracker started, topics should be created")
 
 	// Get retry topic name for later use
 	retryTopic := tracker.RetryTopic(topic)
 
 	// Create business logic processor
 	processor := &testMessageProcessor{
-		logger:         logger,
+		logger:         SharedLogger,
 		firstAttempts:  &firstAttempts,
 		secondAttempts: &secondAttempts,
 		thirdProcessed: &thirdProcessed,
@@ -322,7 +319,7 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 	// Create handler that uses library-agnostic tracker
 	handler := &adapterTestHandler{
 		tracker:   tracker,
-		logger:    logger,
+		logger:    SharedLogger,
 		processor: processor,
 	}
 
@@ -338,7 +335,7 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 		defer wg.Done()
 		for {
 			if err := mainConsumer.Consume(consumerCtx, []string{topic}, handler); err != nil {
-				logger.Error("main consumer error", zap.Error(err))
+				SharedLogger.Error("main consumer error", "error", err)
 			}
 			if consumerCtx.Err() != nil {
 				return
@@ -352,7 +349,7 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 		defer wg.Done()
 		for {
 			if err := retryConsumer.Consume(consumerCtx, []string{retryTopic}, handler); err != nil {
-				logger.Error("retry consumer error", zap.Error(err))
+				SharedLogger.Error("retry consumer error", "error", err)
 			}
 			if consumerCtx.Err() != nil {
 				return
@@ -386,10 +383,10 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 		"third-will-succeed",
 	}, processedMsgs, "all messages should be processed (order may vary based on retry timing)")
 
-	logger.Info("test completed successfully",
-		zap.Int32("first_attempts", firstAttempts.Load()),
-		zap.Int32("second_attempts", secondAttempts.Load()),
-		zap.Bool("third_processed", thirdProcessed.Load()),
+	SharedLogger.Info("test completed successfully",
+		"first_attempts", firstAttempts.Load(),
+		"second_attempts", secondAttempts.Load(),
+		"third_processed", thirdProcessed.Load(),
 	)
 
 	// Stop consumers
@@ -401,7 +398,7 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 // It uses the library-agnostic ErrorTracker via the retry.Message interface.
 type adapterTestHandler struct {
 	tracker   *resilience.ErrorTracker
-	logger    *zap.Logger
+	logger    *slog.Logger
 	processor *testMessageProcessor
 }
 
@@ -421,25 +418,25 @@ func (h *adapterTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 			if retryErr, ok := err.(resilience.RetriableError); ok && retryErr.ShouldRetry() {
 				// Use library-agnostic Redirect API
 				if redirectErr := h.tracker.Redirect(session.Context(), retryMsg, err); redirectErr != nil {
-					h.logger.Error("failed to redirect message", zap.Error(redirectErr))
+					h.logger.Error("failed to redirect message", "error", redirectErr)
 					return redirectErr
 				}
 				h.logger.Info("message redirected to retry",
-					zap.String("payload", string(msg.Value)),
+					"payload", string(msg.Value),
 				)
 			} else {
-				h.logger.Error("non-retriable error", zap.Error(err))
+				h.logger.Error("non-retriable error", "error", err)
 				return err
 			}
 		} else {
 			// Success - free from retry chain if it was in retry
 			if h.tracker.IsInRetryChain(retryMsg) {
 				if freeErr := h.tracker.Free(session.Context(), retryMsg); freeErr != nil {
-					h.logger.Error("failed to free message", zap.Error(freeErr))
+					h.logger.Error("failed to free message", "error", freeErr)
 					return freeErr
 				}
 				h.logger.Info("message freed from retry chain",
-					zap.String("payload", string(msg.Value)),
+					"payload", string(msg.Value),
 				)
 			}
 		}
@@ -453,7 +450,7 @@ func (h *adapterTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 // testMessageProcessor encapsulates test business logic
 // This processor is used by BOTH main consumer and retry consumer (via adapter)
 type testMessageProcessor struct {
-	logger         *zap.Logger
+	logger         *slog.Logger
 	firstAttempts  *atomic.Int32
 	secondAttempts *atomic.Int32
 	thirdProcessed *atomic.Bool
@@ -468,8 +465,8 @@ func (p *testMessageProcessor) process(ctx context.Context, msg *sarama.Consumer
 	case "first-will-fail-twice":
 		attempt := p.firstAttempts.Add(1)
 		p.logger.Info("processing first message",
-			zap.Int32("attempt", attempt),
-			zap.String("source", msg.Topic),
+			"attempt", attempt,
+			"source", msg.Topic,
 		)
 
 		if attempt <= 2 {
@@ -488,8 +485,8 @@ func (p *testMessageProcessor) process(ctx context.Context, msg *sarama.Consumer
 	case "second-will-fail-once":
 		attempt := p.secondAttempts.Add(1)
 		p.logger.Info("processing second message",
-			zap.Int32("attempt", attempt),
-			zap.String("source", msg.Topic),
+			"attempt", attempt,
+			"source", msg.Topic,
 		)
 
 		if attempt == 1 {
@@ -506,7 +503,7 @@ func (p *testMessageProcessor) process(ctx context.Context, msg *sarama.Consumer
 		return nil
 
 	case "third-will-succeed":
-		p.logger.Info("processing third message (will succeed)", zap.String("source", msg.Topic))
+		p.logger.Info("processing third message (will succeed)", "source", msg.Topic)
 		p.thirdProcessed.Store(true)
 
 		p.mu.Lock()
@@ -544,8 +541,6 @@ func TestIntegration_ChainRetry(t *testing.T) {
 	broker, cleanup := setupKafkaContainer(t, ctx)
 	defer cleanup()
 
-	logger := zaptest.NewLogger(t, zaptest.Level(zap.DebugLevel))
-
 	topic := fmt.Sprintf("test-chain-retry-%d", time.Now().UnixNano())
 	groupID := fmt.Sprintf("test-chain-retry-group-%d", time.Now().UnixNano())
 
@@ -579,7 +574,7 @@ func TestIntegration_ChainRetry(t *testing.T) {
 	require.NoError(t, err, "failed to create admin adapter")
 	defer admin.Close()
 
-	retryLogger := saramaadapter.NewZapLogger(logger)
+	retryLogger := SharedLogger
 
 	// Create config with 3 max retries
 	cfg := resilience.NewDefaultConfig()
@@ -618,16 +613,16 @@ func TestIntegration_ChainRetry(t *testing.T) {
 	retryTopic := tracker.RetryTopic(topic)
 	redirectTopic := tracker.RedirectTopic(topic)
 
-	logger.Info("tracker started",
-		zap.String("topic", topic),
-		zap.String("retry_topic", retryTopic),
-		zap.String("redirect_topic", redirectTopic),
+	SharedLogger.Info("tracker started",
+		"topic", topic,
+		"retry_topic", retryTopic,
+		"redirect_topic", redirectTopic,
 	)
 
 	// Create handler that fails first 2 attempts, then succeeds
 	handler := &chainRetryHandler{
 		tracker:  tracker,
-		logger:   logger,
+		logger:   SharedLogger,
 		attempts: &attempts,
 		mu:       &mu,
 		success:  &success,
@@ -655,7 +650,7 @@ func TestIntegration_ChainRetry(t *testing.T) {
 		defer wg.Done()
 		for {
 			if err := mainConsumer.Consume(consumerCtx, []string{topic}, handler); err != nil {
-				logger.Error("main consumer error", zap.Error(err))
+				SharedLogger.Error("main consumer error", "error", err)
 			}
 			if consumerCtx.Err() != nil {
 				return
@@ -669,7 +664,7 @@ func TestIntegration_ChainRetry(t *testing.T) {
 		defer wg.Done()
 		for {
 			if err := retryConsumer.Consume(consumerCtx, []string{retryTopic}, handler); err != nil {
-				logger.Error("retry consumer error", zap.Error(err))
+				SharedLogger.Error("retry consumer error", "error", err)
 			}
 			if consumerCtx.Err() != nil {
 				return
@@ -690,9 +685,9 @@ func TestIntegration_ChainRetry(t *testing.T) {
 		return attempts.Load() == 3 && success
 	}, 30*time.Second, 500*time.Millisecond, "message should be processed after 3 attempts")
 
-	logger.Info("chain retry test completed",
-		zap.Int32("total_attempts", attempts.Load()),
-		zap.Bool("success", success),
+	SharedLogger.Info("chain retry test completed",
+		"total_attempts", attempts.Load(),
+		"success", success,
 	)
 
 	// Verify message went through retry chain
@@ -707,7 +702,7 @@ func TestIntegration_ChainRetry(t *testing.T) {
 // chainRetryHandler handles messages for chain retry test.
 type chainRetryHandler struct {
 	tracker  *resilience.ErrorTracker
-	logger   *zap.Logger
+	logger   *slog.Logger
 	attempts *atomic.Int32
 	mu       *sync.Mutex
 	success  *bool
@@ -722,9 +717,9 @@ func (h *chainRetryHandler) ConsumeClaim(session sarama.ConsumerGroupSession, cl
 		attempt := h.attempts.Add(1)
 
 		h.logger.Info("processing message in chain retry test",
-			zap.Int32("attempt", attempt),
-			zap.String("topic", msg.Topic),
-			zap.String("value", string(msg.Value)),
+			"attempt", attempt,
+			"topic", msg.Topic,
+			"value", string(msg.Value),
 		)
 
 		// Fail first 2 attempts, succeed on 3rd
@@ -735,18 +730,18 @@ func (h *chainRetryHandler) ConsumeClaim(session sarama.ConsumerGroupSession, cl
 			}
 
 			if redirectErr := h.tracker.Redirect(session.Context(), retryMsg, err); redirectErr != nil {
-				h.logger.Error("failed to redirect message", zap.Error(redirectErr))
+				h.logger.Error("failed to redirect message", "error", redirectErr)
 				return redirectErr
 			}
 
 			h.logger.Info("message redirected to retry",
-				zap.Int32("attempt", attempt),
+				"attempt", attempt,
 			)
 		} else {
 			// Success on 3rd attempt
 			if h.tracker.IsInRetryChain(retryMsg) {
 				if freeErr := h.tracker.Free(session.Context(), retryMsg); freeErr != nil {
-					h.logger.Error("failed to free message", zap.Error(freeErr))
+					h.logger.Error("failed to free message", "error", freeErr)
 					return freeErr
 				}
 				h.logger.Info("message freed from retry chain")
@@ -757,7 +752,7 @@ func (h *chainRetryHandler) ConsumeClaim(session sarama.ConsumerGroupSession, cl
 			h.mu.Unlock()
 
 			h.logger.Info("message processed successfully",
-				zap.Int32("total_attempts", attempt),
+				"total_attempts", attempt,
 			)
 		}
 
@@ -779,8 +774,6 @@ func TestIntegration_DLQ(t *testing.T) {
 
 	broker, cleanup := setupKafkaContainer(t, ctx)
 	defer cleanup()
-
-	logger := zaptest.NewLogger(t, zaptest.Level(zap.DebugLevel))
 
 	topic := fmt.Sprintf("test-dlq-%d", time.Now().UnixNano())
 	groupID := fmt.Sprintf("test-dlq-group-%d", time.Now().UnixNano())
@@ -816,7 +809,7 @@ func TestIntegration_DLQ(t *testing.T) {
 	require.NoError(t, err, "failed to create admin adapter")
 	defer admin.Close()
 
-	retryLogger := saramaadapter.NewZapLogger(logger)
+	retryLogger := SharedLogger
 
 	// Create config with MaxRetries=3, FreeOnDLQ=false (default)
 	cfg := resilience.NewDefaultConfig()
@@ -856,16 +849,16 @@ func TestIntegration_DLQ(t *testing.T) {
 	retryTopic := tracker.RetryTopic(topic)
 	dlqTopic := tracker.DLQTopic(topic)
 
-	logger.Info("tracker started",
-		zap.String("topic", topic),
-		zap.String("retry_topic", retryTopic),
-		zap.String("dlq_topic", dlqTopic),
+	SharedLogger.Info("tracker started",
+		"topic", topic,
+		"retry_topic", retryTopic,
+		"dlq_topic", dlqTopic,
 	)
 
 	// Create handler that always fails
 	handler := &dlqTestHandler{
 		tracker:     tracker,
-		logger:      logger,
+		logger:      SharedLogger,
 		attempts:    &attempts,
 		dlqReceived: &dlqReceived,
 		mu:          &mu,
@@ -899,7 +892,7 @@ func TestIntegration_DLQ(t *testing.T) {
 		defer wg.Done()
 		for {
 			if err := mainConsumer.Consume(consumerCtx, []string{topic}, handler); err != nil {
-				logger.Error("main consumer error", zap.Error(err))
+				SharedLogger.Error("main consumer error", "error", err)
 			}
 			if consumerCtx.Err() != nil {
 				return
@@ -913,7 +906,7 @@ func TestIntegration_DLQ(t *testing.T) {
 		defer wg.Done()
 		for {
 			if err := retryConsumer.Consume(consumerCtx, []string{retryTopic}, handler); err != nil {
-				logger.Error("retry consumer error", zap.Error(err))
+				SharedLogger.Error("retry consumer error", "error", err)
 			}
 			if consumerCtx.Err() != nil {
 				return
@@ -927,7 +920,7 @@ func TestIntegration_DLQ(t *testing.T) {
 		defer wg.Done()
 		for {
 			if err := dlqConsumer.Consume(consumerCtx, []string{dlqTopic}, handler); err != nil {
-				logger.Error("DLQ consumer error", zap.Error(err))
+				SharedLogger.Error("DLQ consumer error", "error", err)
 			}
 			if consumerCtx.Err() != nil {
 				return
@@ -952,9 +945,9 @@ func TestIntegration_DLQ(t *testing.T) {
 	assert.NotEmpty(t, dlqHeaders, "DLQ message should have headers")
 	mu.Unlock()
 
-	logger.Info("DLQ test completed",
-		zap.Int32("total_attempts", attempts.Load()),
-		zap.Bool("dlq_received", dlqReceived.Load()),
+	SharedLogger.Info("DLQ test completed",
+		"total_attempts", attempts.Load(),
+		"dlq_received", dlqReceived.Load(),
 	)
 
 	// TODO: Test blocking behavior with FreeOnDLQ=false
@@ -970,7 +963,7 @@ func TestIntegration_DLQ(t *testing.T) {
 // dlqTestHandler handles messages for DLQ test.
 type dlqTestHandler struct {
 	tracker     *resilience.ErrorTracker
-	logger      *zap.Logger
+	logger      *slog.Logger
 	attempts    *atomic.Int32
 	dlqReceived *atomic.Bool
 	mu          *sync.Mutex
@@ -987,8 +980,8 @@ func (h *dlqTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim
 		// Check if this is DLQ topic (check claim topic directly)
 		if strings.HasPrefix(claim.Topic(), "dlq_") || strings.HasPrefix(claim.Topic(), "dlq-") {
 			h.logger.Info("received message in DLQ",
-				zap.String("payload", payload),
-				zap.String("topic", claim.Topic()),
+				"payload", payload,
+				"topic", claim.Topic(),
 			)
 
 			h.dlqReceived.Store(true)
@@ -1019,8 +1012,8 @@ func (h *dlqTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim
 		// Check if max retries exceeded (before processing)
 		if currentAttempt > 3 {
 			h.logger.Info("max retries exceeded, sending to DLQ",
-				zap.Int("current_attempt", currentAttempt),
-				zap.String("payload", payload),
+				"current_attempt", currentAttempt,
+				"payload", payload,
 			)
 
 			err := h.tracker.SendToDLQ(
@@ -1033,7 +1026,7 @@ func (h *dlqTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim
 				fmt.Errorf("max retries exceeded"),
 			)
 			if err != nil {
-				h.logger.Error("failed to send to DLQ", zap.Error(err))
+				h.logger.Error("failed to send to DLQ", "error", err)
 				return err
 			}
 			session.MarkMessage(msg, "")
@@ -1045,9 +1038,9 @@ func (h *dlqTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim
 			attempt := h.attempts.Add(1)
 
 			h.logger.Info("processing message that will fail",
-				zap.Int32("attempt", attempt),
-				zap.String("topic", msg.Topic),
-				zap.Int("retry_attempt", currentAttempt),
+				"attempt", attempt,
+				"topic", msg.Topic,
+				"retry_attempt", currentAttempt,
 			)
 
 			err := resilience.RetriableError{
@@ -1056,7 +1049,7 @@ func (h *dlqTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim
 			}
 
 			if redirectErr := h.tracker.Redirect(session.Context(), retryMsg, err); redirectErr != nil {
-				h.logger.Error("failed to redirect message", zap.Error(redirectErr))
+				h.logger.Error("failed to redirect message", "error", redirectErr)
 				return redirectErr
 			}
 		}
@@ -1091,8 +1084,6 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 	broker, cleanup := setupKafkaContainer(t, ctx)
 	defer cleanup()
 
-	logger := zaptest.NewLogger(t, zaptest.Level(zap.DebugLevel))
-
 	topic := fmt.Sprintf("test-dlq-free-%d", time.Now().UnixNano())
 	groupID := fmt.Sprintf("test-dlq-free-group-%d", time.Now().UnixNano())
 
@@ -1126,7 +1117,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 	require.NoError(t, err, "failed to create admin adapter")
 	defer admin.Close()
 
-	retryLogger := saramaadapter.NewZapLogger(logger)
+	retryLogger := SharedLogger
 
 	// Create config with FreeOnDLQ=true
 	cfg := resilience.NewDefaultConfig()
@@ -1169,7 +1160,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 	// Create handler
 	handler := &dlqFreeTestHandler{
 		tracker:        tracker,
-		logger:         logger,
+		logger:         SharedLogger,
 		firstAttempts:  &firstAttempts,
 		firstDLQ:       &firstDLQ,
 		secondReceived: &secondReceived,
@@ -1200,7 +1191,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 		defer wg.Done()
 		for {
 			if err := mainConsumer.Consume(consumerCtx, []string{topic}, handler); err != nil {
-				logger.Error("main consumer error", zap.Error(err))
+				SharedLogger.Error("main consumer error", "error", err)
 			}
 			if consumerCtx.Err() != nil {
 				return
@@ -1213,7 +1204,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 		defer wg.Done()
 		for {
 			if err := retryConsumer.Consume(consumerCtx, []string{retryTopic}, handler); err != nil {
-				logger.Error("retry consumer error", zap.Error(err))
+				SharedLogger.Error("retry consumer error", "error", err)
 			}
 			if consumerCtx.Err() != nil {
 				return
@@ -1226,7 +1217,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 		defer wg.Done()
 		for {
 			if err := dlqConsumer.Consume(consumerCtx, []string{dlqTopic}, handler); err != nil {
-				logger.Error("DLQ consumer error", zap.Error(err))
+				SharedLogger.Error("DLQ consumer error", "error", err)
 			}
 			if consumerCtx.Err() != nil {
 				return
@@ -1245,7 +1236,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 		return firstAttempts.Load() >= 4 && firstDLQ.Load()
 	}, 30*time.Second, 500*time.Millisecond, "first message should go to DLQ")
 
-	logger.Info("first message sent to DLQ, now sending second message with same key")
+	SharedLogger.Info("first message sent to DLQ, now sending second message with same key")
 
 	// Produce second message with SAME key - should NOT be blocked because first was freed
 	produceTestMessage(t, broker, topic, "test-key", "second-should-process")
@@ -1255,10 +1246,10 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 		return secondReceived.Load()
 	}, 20*time.Second, 500*time.Millisecond, "second message should be processed (not blocked)")
 
-	logger.Info("DLQ with FreeOnDLQ test completed",
-		zap.Int32("first_attempts", firstAttempts.Load()),
-		zap.Bool("first_dlq", firstDLQ.Load()),
-		zap.Bool("second_received", secondReceived.Load()),
+	SharedLogger.Info("DLQ with FreeOnDLQ test completed",
+		"first_attempts", firstAttempts.Load(),
+		"first_dlq", firstDLQ.Load(),
+		"second_received", secondReceived.Load(),
 	)
 
 	// Stop consumers
@@ -1269,7 +1260,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 // dlqFreeTestHandler handles messages for DLQ with FreeOnDLQ test.
 type dlqFreeTestHandler struct {
 	tracker        *resilience.ErrorTracker
-	logger         *zap.Logger
+	logger         *slog.Logger
 	firstAttempts  *atomic.Int32
 	firstDLQ       *atomic.Bool
 	secondReceived *atomic.Bool
@@ -1285,8 +1276,8 @@ func (h *dlqFreeTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 		// Check if this is DLQ topic (check claim topic directly)
 		if strings.HasPrefix(claim.Topic(), "dlq_") || strings.HasPrefix(claim.Topic(), "dlq-") {
 			h.logger.Info("received message in DLQ",
-				zap.String("payload", payload),
-				zap.String("topic", claim.Topic()),
+				"payload", payload,
+				"topic", claim.Topic(),
 			)
 
 			if payload == "first-will-fail" {
@@ -1311,8 +1302,8 @@ func (h *dlqFreeTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 		// Check if max retries exceeded (before processing)
 		if currentAttempt > 3 {
 			h.logger.Info("max retries exceeded, sending to DLQ",
-				zap.Int("current_attempt", currentAttempt),
-				zap.String("payload", payload),
+				"current_attempt", currentAttempt,
+				"payload", payload,
 			)
 
 			err := h.tracker.SendToDLQ(
@@ -1325,7 +1316,7 @@ func (h *dlqFreeTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 				fmt.Errorf("max retries exceeded"),
 			)
 			if err != nil {
-				h.logger.Error("failed to send to DLQ", zap.Error(err))
+				h.logger.Error("failed to send to DLQ", "error", err)
 				return err
 			}
 			session.MarkMessage(msg, "")
@@ -1336,8 +1327,8 @@ func (h *dlqFreeTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 			attempt := h.firstAttempts.Add(1)
 
 			h.logger.Info("processing first message",
-				zap.Int32("attempt", attempt),
-				zap.Int("retry_attempt", currentAttempt),
+				"attempt", attempt,
+				"retry_attempt", currentAttempt,
 			)
 
 			err := resilience.RetriableError{
@@ -1346,7 +1337,7 @@ func (h *dlqFreeTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 			}
 
 			if redirectErr := h.tracker.Redirect(session.Context(), retryMsg, err); redirectErr != nil {
-				h.logger.Error("failed to redirect message", zap.Error(redirectErr))
+				h.logger.Error("failed to redirect message", "error", redirectErr)
 				return redirectErr
 			}
 		} else if payload == "second-should-process" {

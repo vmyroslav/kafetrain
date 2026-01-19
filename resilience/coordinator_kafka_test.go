@@ -350,7 +350,6 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 	// 2. Instance A crashes (or rebalance happens).
 	// 3. Instance B starts up, assigned the same partition.
 	// 4. Instance B consumes the Redirect Topic and must restore the lock locally.
-
 	topic := "orders"
 	key := "order-1"
 
@@ -393,6 +392,7 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 			if err := handler.Handle(ctx, msg); err != nil {
 				return err
 			}
+
 			return nil
 		},
 		CloseFunc: func() error { return nil },
@@ -420,6 +420,7 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 		if callCount == 1 {
 			return restoreConsumer, nil
 		}
+
 		return liveConsumer, nil
 	}
 

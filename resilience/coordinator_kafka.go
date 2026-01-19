@@ -252,6 +252,7 @@ func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) 
 
 	// 2. Check if there's anything to restore
 	hasData := false
+
 	for _, offset := range targetOffsets {
 		if offset > 0 {
 			hasData = true
@@ -271,6 +272,7 @@ func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) 
 	if err != nil {
 		return err
 	}
+
 	defer func() {
 		// clean up ephemeral group
 		go func() {
@@ -383,8 +385,8 @@ type redirectFillHandler struct {
 	k               *KafkaStateCoordinator
 	targetOffsets   map[int32]int64
 	consumedOffsets map[int32]int64
-	mu              sync.Mutex
 	cancel          context.CancelFunc
+	mu              sync.Mutex
 }
 
 func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
@@ -400,6 +402,7 @@ func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
 
 	// Check if all partitions have reached their target offset
 	allDone := true
+
 	for p, target := range r.targetOffsets {
 		if target == 0 {
 			// Empty partition, effectively done
