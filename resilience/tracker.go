@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"time"
 
@@ -72,16 +73,8 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 			return fmt.Errorf("failed to verify existence of topics (auto-creation disabled): %w", err)
 		}
 
-		foundRetry := false
-		foundDLQ := false
-		for _, m := range metadata {
-			if m.Name() == retryTopic {
-				foundRetry = true
-			}
-			if m.Name() == dlqTopic {
-				foundDLQ = true
-			}
-		}
+		foundRetry := slices.ContainsFunc(metadata, func(m TopicMetadata) bool { return m.Name() == retryTopic })
+		foundDLQ := slices.ContainsFunc(metadata, func(m TopicMetadata) bool { return m.Name() == dlqTopic })
 
 		if !foundRetry || !foundDLQ {
 			return fmt.Errorf("required topics missing (auto-creation disabled): retry_exists=%v, dlq_exists=%v", foundRetry, foundDLQ)

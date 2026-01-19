@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -200,6 +201,21 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 }
 
 func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic string) error {
+	redirectTopic := k.redirectTopic(topic)
+
+	if k.cfg.DisableAutoTopicCreation {
+		metadata, err := k.admin.DescribeTopics(ctx, []string{redirectTopic})
+		if err != nil {
+			return fmt.Errorf("failed to verify existence of redirect topic (auto-creation disabled): %w", err)
+		}
+
+		if !slices.ContainsFunc(metadata, func(m TopicMetadata) bool { return m.Name() == redirectTopic }) {
+			return fmt.Errorf("required redirect topic '%s' missing (auto-creation disabled)", redirectTopic)
+		}
+
+		return nil
+	}
+
 	partitions := k.cfg.RetryTopicPartitions
 	if partitions == 0 {
 		metadata, err := k.admin.DescribeTopics(ctx, []string{topic})
@@ -214,7 +230,7 @@ func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic s
 
 	// segment.ms=100 ensures fast compaction for lock state visibility.
 	// Lower values = faster tombstone propagation, higher CPU usage.
-	return k.admin.CreateTopic(ctx, k.redirectTopic(topic), partitions, 1, map[string]string{
+	return k.admin.CreateTopic(ctx, redirectTopic, partitions, 1, map[string]string{
 		"cleanup.policy": "compact",
 		"segment.ms":     "100",
 	})
