@@ -343,3 +343,100 @@ func TestKafkaStateCoordinator_ForeignTombstone(t *testing.T) {
 	// Should be unlocked
 	assert.False(t, coordinator.IsLocked(context.Background(), msg))
 }
+
+func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
+	// Scenario:
+	// 1. Instance A locks "order-1" (persisted to Redirect Topic).
+	// 2. Instance A crashes (or rebalance happens).
+	// 3. Instance B starts up, assigned the same partition.
+	// 4. Instance B consumes the Redirect Topic and must restore the lock locally.
+
+	topic := "orders"
+	key := "order-1"
+
+	mockAdmin := &AdminMock{
+		DescribeTopicsFunc: func(ctx context.Context, topics []string) ([]TopicMetadata, error) {
+			return []TopicMetadata{
+				&mockTopicMetadata{
+					name:       "redirect_orders",
+					partitions: 1,
+					offsets:    map[int32]int64{0: 5}, // HWM is 5
+				},
+			}, nil
+		},
+		CreateTopicFunc: func(ctx context.Context, name string, partitions int32, replicationFactor int16, config map[string]string) error {
+			return nil
+		},
+		DeleteConsumerGroupFunc: func(ctx context.Context, groupID string) error {
+			return nil
+		},
+	}
+
+	// this consumer will be used by restoreState
+	restoreConsumer := &ConsumerMock{
+		ConsumeFunc: func(ctx context.Context, topics []string, handler ConsumerHandler) error {
+			// Simulate the existing lock message on the topic
+			msg := &InternalMessage{
+				topic:   "redirect_orders",
+				KeyData: []byte(key),
+				Payload: []byte(key), // Payload exists = Locked
+				HeaderData: HeaderList{
+					{Key: []byte(HeaderTopic), Value: []byte(topic)},
+					{Key: []byte(HeaderKey), Value: []byte(key)},
+					// Note: Different coordinator ID, simulating Instance A
+					{Key: []byte(HeaderCoordinatorID), Value: []byte("instance-A")},
+				},
+			}
+			msg.SetPartition(0)
+			msg.SetOffset(4) // < HWM (5)
+
+			if err := handler.Handle(ctx, msg); err != nil {
+				return err
+			}
+			return nil
+		},
+		CloseFunc: func() error { return nil },
+	}
+
+	// Live consumer (post-restore)
+	liveConsumer := &ConsumerMock{
+		ConsumeFunc: func(ctx context.Context, topics []string, handler ConsumerHandler) error {
+			<-ctx.Done()
+			return nil
+		},
+		CloseFunc: func() error { return nil },
+	}
+
+	mockFactory := &ConsumerFactoryMock{
+		NewConsumerFunc: func(groupID string) (Consumer, error) {
+			// First call is for restore
+			return restoreConsumer, nil
+		},
+	}
+	// We need to patch the factory for the second call (live consumer) inside the test flow or use a counter
+	callCount := 0
+	mockFactory.NewConsumerFunc = func(groupID string) (Consumer, error) {
+		callCount++
+		if callCount == 1 {
+			return restoreConsumer, nil
+		}
+		return liveConsumer, nil
+	}
+
+	coordinator := NewKafkaStateCoordinator(
+		&Config{RedirectTopicPrefix: "redirect", StateRestoreTimeoutMs: 100},
+		&LoggerMock{DebugFunc: func(s string, i ...interface{}) {}, InfoFunc: func(s string, i ...interface{}) {}},
+		&ProducerMock{},
+		mockFactory,
+		mockAdmin,
+		make(chan error, 1),
+	)
+
+	// Start Instance B
+	err := coordinator.Start(context.Background(), topic)
+	assert.NoError(t, err)
+
+	// Verify Instance B has the lock
+	checkMsg := &InternalMessage{topic: topic, KeyData: []byte(key)}
+	assert.True(t, coordinator.IsLocked(context.Background(), checkMsg), "Instance B should have restored the lock")
+}
