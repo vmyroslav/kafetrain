@@ -4,11 +4,11 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
-	"github.com/vmyroslav/kafetrain/resilience"
+	"github.com/vmyroslav/kafka-resilience/resilience"
 )
 
 // Message wraps sarama.ConsumerMessage to implement retry.Message interface.
-// This is a thin adapter that allows kafetrain core to work with Sarama messages.
+// This is a thin adapter that allows kafka-resilience core to work with Sarama messages.
 type Message struct {
 	*sarama.ConsumerMessage
 }

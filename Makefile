@@ -1,4 +1,4 @@
-NAME=kafetrain
+NAME=kafka-resilience
 BUILD_DIR ?= dist
 
 GO ?= go

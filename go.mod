@@ -1,4 +1,4 @@
-module github.com/vmyroslav/kafetrain
+module github.com/vmyroslav/kafka-resilience
 
 go 1.25
 

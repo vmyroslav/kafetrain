@@ -2,7 +2,7 @@ package sarama
 
 import (
 	"github.com/IBM/sarama"
-	"github.com/vmyroslav/kafetrain/resilience"
+	"github.com/vmyroslav/kafka-resilience/resilience"
 )
 
 type managerOptions struct {

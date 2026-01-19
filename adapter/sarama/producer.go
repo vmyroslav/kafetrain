@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/IBM/sarama"
-	"github.com/vmyroslav/kafetrain/resilience"
+	"github.com/vmyroslav/kafka-resilience/resilience"
 )
 
 // ProducerAdapter wraps sarama.SyncProducer to implement retry.Producer interface.

@@ -8,7 +8,7 @@ import (
 	"github.com/IBM/sarama"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
-	"github.com/vmyroslav/kafetrain/resilience"
+	"github.com/vmyroslav/kafka-resilience/resilience"
 )
 
 // mockConsumerGroup mocks sarama.ConsumerGroup

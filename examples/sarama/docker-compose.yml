@@ -1,7 +1,7 @@
 services:
   kafka:
     image: confluentinc/cp-kafka:7.6.1
-    container_name: kafetrain-sarama-example
+    container_name: kafka-resilience-sarama-example
     ports:
       - "9092:9092"
     environment:

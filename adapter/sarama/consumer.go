@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/IBM/sarama"
-	"github.com/vmyroslav/kafetrain/resilience"
+	"github.com/vmyroslav/kafka-resilience/resilience"
 )
 
 // ConsumerAdapter wraps sarama.ConsumerGroup to implement retry.Consumer interface.

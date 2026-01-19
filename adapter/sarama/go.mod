@@ -1,12 +1,13 @@
-module github.com/vmyroslav/kafetrain/adapter/sarama
+module github.com/vmyroslav/kafka-resilience/adapter/sarama
 
 go 1.25
 
 require (
 	github.com/IBM/sarama v1.46.3
+	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go/modules/kafka v0.40.0
-	github.com/vmyroslav/kafetrain v0.0.0
+	github.com/vmyroslav/kafka-resilience v0.0.0
 	go.uber.org/zap v1.27.1
 )
 
@@ -35,7 +36,6 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-ole/go-ole v1.2.6 // indirect
 	github.com/golang/snappy v1.0.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.4 // indirect
 	github.com/hashicorp/go-uuid v1.0.3 // indirect
 	github.com/jcmturner/aescts/v2 v2.0.0 // indirect
@@ -85,4 +85,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/vmyroslav/kafetrain => ../../
+replace github.com/vmyroslav/kafka-resilience => ../../

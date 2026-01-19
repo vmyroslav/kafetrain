@@ -1,7 +1,7 @@
 package sarama
 
 import (
-	"github.com/vmyroslav/kafetrain/resilience"
+	"github.com/vmyroslav/kafka-resilience/resilience"
 	"go.uber.org/zap"
 )
 

@@ -129,7 +129,7 @@ tasks:
       - Output to dist/ directory
     vars:
       BUILD_DIR: '{{.BUILD_DIR | default "dist"}}'
-      BINARY: '{{.BINARY | default "kafetrain"}}'
+      BINARY: '{{.BINARY | default "kafka-resilience"}}'
     cmds:
       - mkdir -p {{.BUILD_DIR}}
       - CGO_ENABLED=0 go build -o {{.BUILD_DIR}}/{{.BINARY}} .

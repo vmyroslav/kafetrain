@@ -11,8 +11,8 @@ import (
 	"syscall"
 
 	"github.com/IBM/sarama"
-	saramaadapter "github.com/vmyroslav/kafetrain/adapter/sarama"
-	"github.com/vmyroslav/kafetrain/resilience"
+	saramaadapter "github.com/vmyroslav/kafka-resilience/adapter/sarama"
+	"github.com/vmyroslav/kafka-resilience/resilience"
 )
 
 func main() {
@@ -27,7 +27,7 @@ func main() {
 	topic := "example-orders"
 	groupID := "example-orders-group"
 
-	slog.Info("Starting Kafetrain Sarama Example")
+	slog.Info("Starting Kafka Resilience Sarama Example")
 	slog.Info("Configuration", "brokers", brokers)
 
 	// 1. Setup Sarama Client (Standard)

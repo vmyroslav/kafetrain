@@ -12,8 +12,8 @@ import (
 	"github.com/IBM/sarama"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	saramaadapter "github.com/vmyroslav/kafetrain/adapter/sarama"
-	"github.com/vmyroslav/kafetrain/resilience"
+	saramaadapter "github.com/vmyroslav/kafka-resilience/adapter/sarama"
+	"github.com/vmyroslav/kafka-resilience/resilience"
 )
 
 // TestIntegration_SaramaConsumer verifies that ConsumerAdapter can consume messages from a real Kafka broker.

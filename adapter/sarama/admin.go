@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/IBM/sarama"
-	"github.com/vmyroslav/kafetrain/resilience"
+	"github.com/vmyroslav/kafka-resilience/resilience"
 )
 
 // AdminAdapter wraps sarama.ClusterAdmin to implement retry.Admin interface.
