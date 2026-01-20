@@ -19,6 +19,10 @@ type StateCoordinator interface {
 
 	// IsLocked checks if the key is currently locked.
 	IsLocked(ctx context.Context, msg *InternalMessage) bool
+
+	// Synchronize ensures the coordinator's local state is up-to-date with the distributed source of truth.
+	// Users should call this in their consumer's Setup/Rebalance handler.
+	Synchronize(ctx context.Context) error
 }
 
 // Producer publishes messages to Kafka topics (library-agnostic).

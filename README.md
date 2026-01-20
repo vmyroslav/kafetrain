@@ -139,6 +139,24 @@ graph TD
 
 ---
 
+## Advanced: Rebalancing & Strict Consistency
+
+By default, `kafka-resilience` is eventually consistent during consumer group rebalancing. There is a tiny race condition where a node might take over a partition but process a message *before* it has fully synced the latest locks from the Redirect Topic.
+
+For applications requiring **absolute strictness** during rebalancing, you can use the `Synchronize` method in your consumer's `Setup` or `Cleanup` phase:
+
+```go
+// Inside your Sarama ConsumerGroupHandler
+func (h *Handler) Setup(session sarama.ConsumerGroupSession) error {
+    // Blocks until local state is fully synced with the distributed log
+    return h.tracker.Synchronize(session.Context())
+}
+```
+
+This ensures that the consumer never processes a message until it is 100% sure of the current lock state.
+
+---
+
 ## License
 
 [MIT](LICENSE)

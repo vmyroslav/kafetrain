@@ -203,6 +203,12 @@ func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
 	return t.coordinator.Start(ctx, topic)
 }
 
+// Synchronize ensures the internal state is consistent with the distributed log.
+// This should be called during the Rebalance phase (e.g. in Sarama's Setup()).
+func (t *ErrorTracker) Synchronize(ctx context.Context) error {
+	return t.coordinator.Synchronize(ctx)
+}
+
 // IsInRetryChain checks if a message is already in the retry chain.
 // Returns true if the message key is currently being tracked for retries.
 func (t *ErrorTracker) IsInRetryChain(msg Message) bool {

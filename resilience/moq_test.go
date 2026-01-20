@@ -763,6 +763,9 @@ var _ StateCoordinator = &StateCoordinatorMock{}
 //			StartFunc: func(ctx context.Context, topic string) error {
 //				panic("mock out the Start method")
 //			},
+//			SynchronizeFunc: func(ctx context.Context) error {
+//				panic("mock out the Synchronize method")
+//			},
 //		}
 //
 //		// use mockedStateCoordinator in code that requires StateCoordinator
@@ -781,6 +784,9 @@ type StateCoordinatorMock struct {
 
 	// StartFunc mocks the Start method.
 	StartFunc func(ctx context.Context, topic string) error
+
+	// SynchronizeFunc mocks the Synchronize method.
+	SynchronizeFunc func(ctx context.Context) error
 
 	// calls tracks calls to the methods.
 	calls struct {
@@ -814,11 +820,17 @@ type StateCoordinatorMock struct {
 			// Topic is the topic argument value.
 			Topic string
 		}
+		// Synchronize holds details about calls to the Synchronize method.
+		Synchronize []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+		}
 	}
-	lockAcquire  sync.RWMutex
-	lockIsLocked sync.RWMutex
-	lockRelease  sync.RWMutex
-	lockStart    sync.RWMutex
+	lockAcquire     sync.RWMutex
+	lockIsLocked    sync.RWMutex
+	lockRelease     sync.RWMutex
+	lockStart       sync.RWMutex
+	lockSynchronize sync.RWMutex
 }
 
 // Acquire calls AcquireFunc.
@@ -966,5 +978,37 @@ func (mock *StateCoordinatorMock) StartCalls() []struct {
 	mock.lockStart.RLock()
 	calls = mock.calls.Start
 	mock.lockStart.RUnlock()
+	return calls
+}
+
+// Synchronize calls SynchronizeFunc.
+func (mock *StateCoordinatorMock) Synchronize(ctx context.Context) error {
+	if mock.SynchronizeFunc == nil {
+		panic("StateCoordinatorMock.SynchronizeFunc: method is nil but StateCoordinator.Synchronize was just called")
+	}
+	callInfo := struct {
+		Ctx context.Context
+	}{
+		Ctx: ctx,
+	}
+	mock.lockSynchronize.Lock()
+	mock.calls.Synchronize = append(mock.calls.Synchronize, callInfo)
+	mock.lockSynchronize.Unlock()
+	return mock.SynchronizeFunc(ctx)
+}
+
+// SynchronizeCalls gets all the calls that were made to Synchronize.
+// Check the length with:
+//
+//	len(mockedStateCoordinator.SynchronizeCalls())
+func (mock *StateCoordinatorMock) SynchronizeCalls() []struct {
+	Ctx context.Context
+} {
+	var calls []struct {
+		Ctx context.Context
+	}
+	mock.lockSynchronize.RLock()
+	calls = mock.calls.Synchronize
+	mock.lockSynchronize.RUnlock()
 	return calls
 }

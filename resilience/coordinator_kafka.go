@@ -23,6 +23,9 @@ type KafkaStateCoordinator struct {
 	logger          Logger
 	errors          chan<- error
 	instanceID      string
+	topic           string
+	consumedOffsets map[int32]int64
+	mu              sync.RWMutex
 }
 
 // NewKafkaStateCoordinator creates a coordinator using a compacted Kafka topic for distributed state.
@@ -44,6 +47,7 @@ func NewKafkaStateCoordinator(
 		logger:          logger,
 		errors:          errCh,
 		instanceID:      uuid.New().String(),
+		consumedOffsets: make(map[int32]int64),
 	}
 }
 
@@ -52,6 +56,10 @@ func (k *KafkaStateCoordinator) IsLocked(ctx context.Context, msg *InternalMessa
 }
 
 func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
+	k.mu.Lock()
+	k.topic = topic
+	k.mu.Unlock()
+
 	// ensure redirect topic exists
 	if err := k.ensureRedirectTopic(ctx, topic); err != nil {
 		return err
@@ -198,6 +206,64 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 	}
 
 	return nil
+}
+
+// Synchronize ensures the coordinator's local state is up-to-date with the distributed source of truth.
+// It blocks until the internal redirect consumer has reached the High Water Mark of the redirect topic.
+func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
+	k.mu.RLock()
+	topic := k.topic
+	k.mu.RUnlock()
+
+	if topic == "" {
+		return errors.New("coordinator not started: topic is empty")
+	}
+
+	redirectTopic := k.redirectTopic(topic)
+
+	// 1. Get High Water Marks for the redirect topic
+	metadata, err := k.admin.DescribeTopics(ctx, []string{redirectTopic})
+	if err != nil {
+		return fmt.Errorf("failed to describe redirect topic for sync: %w", err)
+	}
+
+	if len(metadata) == 0 {
+		return nil
+	}
+
+	targetOffsets := metadata[0].PartitionOffsets()
+
+	// 2. Wait until we reach them
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			k.mu.RLock()
+			allCaughtUp := true
+			for p, target := range targetOffsets {
+				if target == 0 {
+					continue
+				}
+
+				consumed, ok := k.consumedOffsets[p]
+				// target is HWM (next offset to be written).
+				// We are caught up if we processed (target - 1).
+				if !ok || consumed < target-1 {
+					allCaughtUp = false
+					break
+				}
+			}
+			k.mu.RUnlock()
+
+			if allCaughtUp {
+				return nil
+			}
+		}
+	}
 }
 
 func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic string) error {
@@ -430,5 +496,13 @@ type RedirectHandler struct {
 }
 
 func (r *RedirectHandler) Handle(ctx context.Context, msg Message) error {
-	return r.k.processRedirectMessage(ctx, msg)
+	if err := r.k.processRedirectMessage(ctx, msg); err != nil {
+		return err
+	}
+
+	r.k.mu.Lock()
+	r.k.consumedOffsets[msg.Partition()] = msg.Offset()
+	r.k.mu.Unlock()
+
+	return nil
 }
