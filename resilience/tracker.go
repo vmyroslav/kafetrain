@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/avast/retry-go/v4"
@@ -21,7 +22,9 @@ type ErrorTracker struct {
 	consumerFactory ConsumerFactory
 	admin           Admin
 	cfg             *Config
-	cancel          context.CancelFunc
+	mu              sync.RWMutex
+	startedTopics   map[string]struct{}
+	cancels         map[string]context.CancelFunc
 }
 
 // NewErrorTracker creates a new ErrorTracker.
@@ -68,6 +71,8 @@ func NewErrorTracker(
 		admin:           admin,
 		coordinator:     coordinator,
 		backoff:         backoff,
+		startedTopics:   make(map[string]struct{}),
+		cancels:         make(map[string]context.CancelFunc),
 	}
 
 	return &t, nil
@@ -77,22 +82,43 @@ func NewErrorTracker(
 // 1. It starts the control plane (Coordinator) to manage ordering locks.
 // 2. It starts the data plane (StartRetryWorker) to process retry messages.
 func (t *ErrorTracker) Start(ctx context.Context, topic string, handler ConsumerHandler) error {
-	// Create a derived context that we can cancel to stop all background workers (retry worker, coordinator)
-	trackerCtx, cancel := context.WithCancel(ctx)
-	t.cancel = cancel
+	t.mu.Lock()
+	if _, started := t.startedTopics[topic]; started {
+		t.mu.Unlock()
+		return nil
+	}
+	t.startedTopics[topic] = struct{}{}
 
-	if err := t.coordinator.Start(trackerCtx, topic); err != nil {
+	// Create a cancellable context for this topic's workers, derived from the input context
+	workerCtx, cancel := context.WithCancel(ctx)
+	t.cancels[topic] = cancel
+	t.mu.Unlock()
+
+	// Use derived context for both setup and background workers
+	// If setup fails, we cancel the context to clean up any partial state
+	if err := t.coordinator.Start(workerCtx, topic); err != nil {
+		cancel()
+		t.mu.Lock()
+		delete(t.startedTopics, topic)
+		delete(t.cancels, topic)
+		t.mu.Unlock()
 		return err
 	}
 
-	return t.StartRetryWorker(trackerCtx, topic, handler)
+	// background workers use the same derived context
+	return t.StartRetryWorker(workerCtx, topic, handler)
 }
 
 // Close stops all background workers and releases resources.
 func (t *ErrorTracker) Close() error {
-	if t.cancel != nil {
-		t.cancel()
+	t.mu.Lock()
+	for _, cancel := range t.cancels {
+		cancel()
 	}
+	// Clear maps to prevent reuse without restart
+	t.cancels = make(map[string]context.CancelFunc)
+	t.startedTopics = make(map[string]struct{})
+	t.mu.Unlock()
 
 	return t.coordinator.Close()
 }
