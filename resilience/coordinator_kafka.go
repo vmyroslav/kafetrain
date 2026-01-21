@@ -389,7 +389,14 @@ func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic
 	}
 
 	go func() {
-		k.errors <- consumer.Consume(ctx, []string{k.redirectTopic(topic)}, &RedirectHandler{k: k})
+		err := consumer.Consume(ctx, []string{k.redirectTopic(topic)}, &RedirectHandler{k: k})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			if k.errors != nil {
+				k.errors <- err
+			} else {
+				k.logger.Error("background redirect consumer error", "error", err)
+			}
+		}
 	}()
 
 	return nil

@@ -39,17 +39,6 @@ func NewResilienceTracker(
 		return nil, err
 	}
 
-	if options.errCh == nil {
-		// default error channel draining by logger
-		defaultErrCh := make(chan error, 10)
-		go func() {
-			for err := range defaultErrCh {
-				options.logger.Error("kafka-resilience background error", "error", err)
-			}
-		}()
-		options.errCh = defaultErrCh
-	}
-
 	coordinator := options.coordinator
 	if coordinator == nil {
 		coordinator = resilience.NewKafkaStateCoordinator(
