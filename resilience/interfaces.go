@@ -21,7 +21,17 @@ type StateCoordinator interface {
 	IsLocked(ctx context.Context, msg *InternalMessage) bool
 
 	// Synchronize ensures the coordinator's local state is up-to-date with the distributed source of truth.
-	// Users should call this in their consumer's Setup/Rebalance handler.
+	// This is an OPTIONAL method. By default, the system is eventually consistent during rebalancing.
+	//
+	// Use Case:
+	// Call this in your consumer's Setup/Rebalance handler for strict consistency. It prevents a race condition
+	// where a node takes over a partition and processes a message *before* it has received all existing locks
+	// from the distributed log.
+	//
+	// Performance Warning:
+	// This method fetches the current High Water Mark for all partitions of the redirect topic (network I/O)
+	// and blocks until the internal background consumer catches up. In Kafka implementations, this may
+	// involve checking offsets for every partition, which can add significant latency during rebalancing.
 	Synchronize(ctx context.Context) error
 }
 
