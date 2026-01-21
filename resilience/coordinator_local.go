@@ -78,6 +78,11 @@ func (l *LocalStateCoordinator) Synchronize(_ context.Context) error {
 	return nil
 }
 
+// Close is a no-op for LocalStateCoordinator.
+func (l *LocalStateCoordinator) Close() error {
+	return nil
+}
+
 // topic map ['topic-name' => ['topic-key' => refCount]].
 // Reference counting ensures keys are unlocked only when all messages with that key complete.
 type lockMap map[string]map[string]int

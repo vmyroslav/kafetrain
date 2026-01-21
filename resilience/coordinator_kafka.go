@@ -26,6 +26,7 @@ type KafkaStateCoordinator struct {
 	instanceID      string
 	topic           string
 	mu              sync.RWMutex
+	cancel          context.CancelFunc
 }
 
 // NewKafkaStateCoordinator creates a coordinator using a compacted Kafka topic for distributed state.
@@ -58,6 +59,9 @@ func (k *KafkaStateCoordinator) IsLocked(ctx context.Context, msg *InternalMessa
 func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 	k.mu.Lock()
 	k.topic = topic
+	// Create a derived context for background workers that we can cancel via Close()
+	workerCtx, cancel := context.WithCancel(ctx)
+	k.cancel = cancel
 	k.mu.Unlock()
 
 	// ensure redirect topic exists
@@ -71,7 +75,18 @@ func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 	}
 
 	// start monitoring of redirect topic
-	return k.startRedirectConsumer(ctx, topic)
+	return k.startRedirectConsumer(workerCtx, topic)
+}
+
+func (k *KafkaStateCoordinator) Close() error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+
+	if k.cancel != nil {
+		k.cancel()
+	}
+
+	return nil
 }
 
 // Acquire locks the key for the given message.
@@ -400,7 +415,7 @@ func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic
 		for {
 			err := consumer.Consume(ctx, []string{k.redirectTopic(topic)}, &RedirectHandler{k: k})
 
-			// 1. Check for clean shutdown
+			// check for clean shutdown
 			if errors.Is(ctx.Err(), context.Canceled) {
 				return
 			}

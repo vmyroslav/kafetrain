@@ -21,6 +21,7 @@ type ErrorTracker struct {
 	consumerFactory ConsumerFactory
 	admin           Admin
 	cfg             *Config
+	cancel          context.CancelFunc
 }
 
 // NewErrorTracker creates a new ErrorTracker.
@@ -33,6 +34,28 @@ func NewErrorTracker(
 	coordinator StateCoordinator,
 	backoff BackoffStrategy,
 ) (*ErrorTracker, error) {
+	if cfg == nil {
+		return nil, errors.New("config cannot be nil")
+	}
+	if cfg.GroupID == "" {
+		return nil, errors.New("config.GroupID is required")
+	}
+	if logger == nil {
+		return nil, errors.New("logger cannot be nil")
+	}
+	if producer == nil {
+		return nil, errors.New("producer cannot be nil")
+	}
+	if consumerFactory == nil {
+		return nil, errors.New("consumerFactory cannot be nil")
+	}
+	if admin == nil {
+		return nil, errors.New("admin cannot be nil")
+	}
+	if coordinator == nil {
+		return nil, errors.New("coordinator cannot be nil")
+	}
+
 	if backoff == nil {
 		backoff = NewExponentialBackoff()
 	}
@@ -54,11 +77,24 @@ func NewErrorTracker(
 // 1. It starts the control plane (Coordinator) to manage ordering locks.
 // 2. It starts the data plane (StartRetryWorker) to process retry messages.
 func (t *ErrorTracker) Start(ctx context.Context, topic string, handler ConsumerHandler) error {
-	if err := t.coordinator.Start(ctx, topic); err != nil {
+	// Create a derived context that we can cancel to stop all background workers (retry worker, coordinator)
+	trackerCtx, cancel := context.WithCancel(ctx)
+	t.cancel = cancel
+
+	if err := t.coordinator.Start(trackerCtx, topic); err != nil {
 		return err
 	}
 
-	return t.StartRetryWorker(ctx, topic, handler)
+	return t.StartRetryWorker(trackerCtx, topic, handler)
+}
+
+// Close stops all background workers and releases resources.
+func (t *ErrorTracker) Close() error {
+	if t.cancel != nil {
+		t.cancel()
+	}
+
+	return t.coordinator.Close()
 }
 
 // ensureTopicsExist creates retry and DLQ topics if they don't exist.
@@ -158,7 +194,29 @@ func (t *ErrorTracker) StartRetryWorker(ctx context.Context, topic string, handl
 	go func() {
 		defer retryConsumer.Close()
 
-		_ = retryConsumer.Consume(ctx, []string{retryTopic}, workerHandler)
+		backoff := 5 * time.Second
+
+		for {
+			err := retryConsumer.Consume(ctx, []string{retryTopic}, workerHandler)
+
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return
+			}
+
+			if err != nil {
+				t.logger.Error("retry worker failed, restarting",
+					"topic", retryTopic,
+					"error", err,
+					"retry_in", backoff,
+				)
+			}
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+		}
 	}()
 
 	t.logger.Info("started background retry worker",
@@ -521,8 +579,11 @@ func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, msg Message) error 
 	)
 
 	// Wait until the scheduled time or context is canceled
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
 	select {
-	case <-time.After(delay):
+	case <-timer.C:
 		t.logger.Debug("delay complete, processing message",
 			"topic", msg.Topic(),
 		)
@@ -545,6 +606,10 @@ func NewRetriableError(origin error, retry bool) *RetriableError {
 
 func (e RetriableError) Error() string {
 	return e.Origin.Error()
+}
+
+func (e RetriableError) Unwrap() error {
+	return e.Origin
 }
 
 func (e RetriableError) ShouldRetry() bool {

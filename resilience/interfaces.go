@@ -33,6 +33,9 @@ type StateCoordinator interface {
 	// and blocks until the internal background consumer catches up. In Kafka implementations, this may
 	// involve checking offsets for every partition, which can add significant latency during rebalancing.
 	Synchronize(ctx context.Context) error
+
+	// Close cleans up resources managed by the coordinator (e.g., stops background consumers).
+	Close() error
 }
 
 // Producer publishes messages to Kafka topics (library-agnostic).

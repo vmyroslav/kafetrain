@@ -41,6 +41,7 @@ func TestErrorTracker_Redirect_Rollback(t *testing.T) {
 	}
 
 	cfg := &Config{
+		GroupID:          "test-group",
 		MaxRetries:       5,
 		RetryTopicPrefix: "retry",
 	}
@@ -86,24 +87,25 @@ func TestErrorTracker_Redirect_HappyPath(t *testing.T) {
 		},
 	}
 
-	tracker, _ := NewErrorTracker(
-		&Config{MaxRetries: 5, RetryTopicPrefix: "retry"},
+	tracker, err := NewErrorTracker(
+		&Config{GroupID: "test-group", MaxRetries: 5, RetryTopicPrefix: "retry"},
 		&LoggerMock{
 			DebugFunc: func(s string, i ...interface{}) {},
 		},
 		mockProducer,
-		nil,
-		nil,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
 	)
+	assert.NoError(t, err)
 
 	msg := &InternalMessage{
 		topic:   "orders",
 		KeyData: []byte("order-1"),
 	}
 
-	err := tracker.Redirect(context.Background(), msg, errors.New("fail"))
+	err = tracker.Redirect(context.Background(), msg, errors.New("fail"))
 	assert.NoError(t, err)
 
 	assert.Len(t, mockCoordinator.AcquireCalls(), 1)
