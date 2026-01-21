@@ -119,6 +119,7 @@ func TestKafkaStateCoordinator_Synchronize_BlocksUntilCaughtUp(t *testing.T) {
 
 	// Use a channel to signal when Synchronize returns
 	done := make(chan error)
+
 	go func() {
 		done <- coordinator.Synchronize(context.Background())
 	}()
@@ -176,8 +177,10 @@ func TestKafkaStateCoordinator_Synchronize_ContextCancellation(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(1)
+
 	go func() {
 		defer wg.Done()
+
 		err := coordinator.Synchronize(ctx)
 		assert.ErrorIs(t, err, context.Canceled)
 	}()

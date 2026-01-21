@@ -15,16 +15,16 @@ import (
 // KafkaStateCoordinator implements StateCoordinator using a compacted Kafka topic and local memory.
 // It decorates LocalStateCoordinator to add distributed synchronization.
 type KafkaStateCoordinator struct {
-	local           *LocalStateCoordinator
 	producer        Producer
 	consumerFactory ConsumerFactory
 	admin           Admin
-	cfg             *Config
 	logger          Logger
+	local           *LocalStateCoordinator
+	cfg             *Config
 	errors          chan<- error
+	consumedOffsets map[int32]int64
 	instanceID      string
 	topic           string
-	consumedOffsets map[int32]int64
 	mu              sync.RWMutex
 }
 
@@ -243,7 +243,9 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			k.mu.RLock()
+
 			allCaughtUp := true
+
 			for p, target := range targetOffsets {
 				if target == 0 {
 					continue
@@ -257,6 +259,7 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 					break
 				}
 			}
+
 			k.mu.RUnlock()
 
 			if allCaughtUp {
@@ -388,13 +391,41 @@ func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic
 		return err
 	}
 
+	// TODO: propagate errors back to the tracker
 	go func() {
-		err := consumer.Consume(ctx, []string{k.redirectTopic(topic)}, &RedirectHandler{k: k})
-		if err != nil && !errors.Is(err, context.Canceled) {
-			if k.errors != nil {
-				k.errors <- err
-			} else {
-				k.logger.Error("background redirect consumer error", "error", err)
+		defer consumer.Close()
+
+		backoff := 5 * time.Second
+
+		for {
+			err := consumer.Consume(ctx, []string{k.redirectTopic(topic)}, &RedirectHandler{k: k})
+
+			// 1. Check for clean shutdown
+			if errors.Is(ctx.Err(), context.Canceled) {
+				return
+			}
+
+			// 2. Handle errors
+			if err != nil {
+				if k.errors != nil {
+					select {
+					case k.errors <- err:
+					default:
+						k.logger.Warn("error channel full, dropping background error", "error", err)
+					}
+				} else {
+					k.logger.Error("background redirect consumer failed, restarting",
+						"error", err,
+						"retry_in", backoff,
+					)
+				}
+			}
+			// wait before restarting
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+				// continue loop
 			}
 		}
 	}()
