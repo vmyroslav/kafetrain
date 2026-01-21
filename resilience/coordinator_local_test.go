@@ -128,10 +128,8 @@ func TestLocalStateCoordinator_Release_WithHeader(t *testing.T) {
 	releaseMsg := &InternalMessage{
 		topic:   "redirect_orders", // different topic
 		KeyData: []byte("key1"),
-		HeaderData: HeaderList{
-			{Key: []byte(HeaderTopic), Value: []byte("orders")},
-		},
 	}
+	releaseMsg.HeaderData.Set(HeaderTopic, []byte("orders"))
 
 	err := coordinator.Release(ctx, releaseMsg)
 	assert.NoError(t, err)

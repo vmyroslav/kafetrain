@@ -101,20 +101,10 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 		return err
 	}
 
-	headers := HeaderList{
-		{
-			Key:   []byte(HeaderTopic),
-			Value: []byte(originalTopic),
-		},
-		{
-			Key:   []byte(HeaderKey),
-			Value: msg.KeyData,
-		},
-		{
-			Key:   []byte(HeaderCoordinatorID),
-			Value: []byte(k.instanceID),
-		},
-	}
+	headers := HeaderList{}
+	headers.Set(HeaderTopic, []byte(originalTopic))
+	headers.Set(HeaderKey, msg.KeyData)
+	headers.Set(HeaderCoordinatorID, []byte(k.instanceID))
 
 	redirectMsg := &InternalMessage{
 		topic:         k.redirectTopic(originalTopic),
@@ -170,20 +160,10 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 		return err
 	}
 
-	headers := HeaderList{
-		{
-			Key:   []byte(HeaderTopic),
-			Value: []byte(topic),
-		},
-		{
-			Key:   []byte(HeaderKey),
-			Value: msg.KeyData,
-		},
-		{
-			Key:   []byte(HeaderCoordinatorID),
-			Value: []byte(k.instanceID),
-		},
-	}
+	headers := HeaderList{}
+	headers.Set(HeaderTopic, []byte(topic))
+	headers.Set(HeaderKey, msg.KeyData)
+	headers.Set(HeaderCoordinatorID, []byte(k.instanceID))
 
 	tombstoneMsg := &InternalMessage{
 		topic:         k.redirectTopic(topic),

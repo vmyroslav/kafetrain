@@ -17,15 +17,16 @@ func createMockRedirectMsg(topic, key, coordinatorID string, isLock bool) *Inter
 		value = nil
 	}
 
+	hl := HeaderList{}
+	hl.Set(HeaderCoordinatorID, []byte(coordinatorID))
+	hl.Set(HeaderTopic, []byte(topic))
+	hl.Set("key", []byte(key))
+
 	return &InternalMessage{
-		topic:   "redirect_" + topic,
-		KeyData: []byte(key),
-		Payload: value,
-		HeaderData: HeaderList{
-			{Key: []byte(HeaderCoordinatorID), Value: []byte(coordinatorID)},
-			{Key: []byte(HeaderTopic), Value: []byte(topic)},
-			{Key: []byte("key"), Value: []byte(key)},
-		},
+		topic:      "redirect_" + topic,
+		KeyData:    []byte(key),
+		Payload:    value,
+		HeaderData: hl,
 	}
 }
 
@@ -71,10 +72,8 @@ func TestKafkaStateCoordinator_Acquire(t *testing.T) {
 	msg := &InternalMessage{
 		topic:   "orders",
 		KeyData: []byte("order-123"),
-		HeaderData: HeaderList{
-			{Key: []byte("custom"), Value: []byte("val")},
-		},
 	}
+	msg.HeaderData.Set("custom", []byte("val"))
 
 	// Test Acquire
 	err := coordinator.Acquire(ctx, msg, "orders")
@@ -180,11 +179,10 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 				topic:   "redirect_orders",
 				KeyData: []byte("order-locked"),
 				Payload: []byte("order-locked"),
-				HeaderData: HeaderList{
-					{Key: []byte("topic"), Value: []byte("orders")},
-					{Key: []byte("key"), Value: []byte("order-locked")},
-				},
 			}
+			msg.HeaderData.Set("topic", []byte("orders"))
+			msg.HeaderData.Set("key", []byte("order-locked"))
+
 			msg.SetPartition(0)
 			msg.SetOffset(9) // Last offset (target is 10)
 			handler.Handle(ctx, msg)
@@ -281,12 +279,10 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 		topic:   "redirect_orders",
 		KeyData: []byte("k1"),
 		Payload: []byte("k1"),
-		HeaderData: HeaderList{
-			{Key: []byte(HeaderCoordinatorID), Value: []byte(coordinator.instanceID)},
-			{Key: []byte(HeaderTopic), Value: []byte("orders")},
-			{Key: []byte("key"), Value: []byte("k1")},
-		},
 	}
+	echoMsg.HeaderData.Set(HeaderCoordinatorID, []byte(coordinator.instanceID))
+	echoMsg.HeaderData.Set(HeaderTopic, []byte("orders"))
+	echoMsg.HeaderData.Set("key", []byte("k1"))
 
 	// We call Acquire first to set local ref count to 1 (simulating the source of the echo)
 	_ = coordinator.local.Acquire(context.Background(), &InternalMessage{topic: "orders", KeyData: []byte("k1")}, "orders")
@@ -304,12 +300,10 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 		topic:   "redirect_orders",
 		KeyData: []byte("k1"),
 		Payload: []byte("k1"),
-		HeaderData: HeaderList{
-			{Key: []byte(HeaderCoordinatorID), Value: []byte("other-uuid")},
-			{Key: []byte(HeaderTopic), Value: []byte("orders")},
-			{Key: []byte("key"), Value: []byte("k1")},
-		},
 	}
+	foreignMsg.HeaderData.Set(HeaderCoordinatorID, []byte("other-uuid"))
+	foreignMsg.HeaderData.Set(HeaderTopic, []byte("orders"))
+	foreignMsg.HeaderData.Set("key", []byte("k1"))
 
 	err = coordinator.processRedirectMessage(context.Background(), foreignMsg)
 	assert.NoError(t, err)
@@ -379,13 +373,12 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 				topic:   "redirect_orders",
 				KeyData: []byte(key),
 				Payload: []byte(key), // Payload exists = Locked
-				HeaderData: HeaderList{
-					{Key: []byte(HeaderTopic), Value: []byte(topic)},
-					{Key: []byte(HeaderKey), Value: []byte(key)},
-					// Note: Different coordinator ID, simulating Instance A
-					{Key: []byte(HeaderCoordinatorID), Value: []byte("instance-A")},
-				},
 			}
+			msg.HeaderData.Set(HeaderTopic, []byte(topic))
+			msg.HeaderData.Set(HeaderKey, []byte(key))
+			// Note: Different coordinator ID, simulating Instance A
+			msg.HeaderData.Set(HeaderCoordinatorID, []byte("instance-A"))
+
 			msg.SetPartition(0)
 			msg.SetOffset(4) // < HWM (5)
 

@@ -1,7 +1,6 @@
 package resilience
 
 import (
-	"bytes"
 	"fmt"
 	"strconv"
 	"time"
@@ -67,6 +66,9 @@ type Headers interface {
 
 	// Clone creates a deep copy of headers
 	Clone() Headers
+
+	// Range calls fn sequentially for each header. If fn returns false, range stops the iteration.
+	Range(fn func(key string, value []byte) bool)
 }
 
 // InternalMessage is the internal message representation.
@@ -81,20 +83,21 @@ type InternalMessage struct {
 }
 
 func NewFromMessage(msg Message) *InternalMessage {
-	headers := make(HeaderList, 0, len(msg.Headers().All()))
-	for key, value := range msg.Headers().All() {
-		headers = append(headers, Header{Key: []byte(key), Value: value})
-	}
-
-	return &InternalMessage{
+	im := &InternalMessage{
 		topic:         msg.Topic(),
 		partition:     msg.Partition(),
 		offset:        msg.Offset(),
 		KeyData:       msg.Key(),
 		Payload:       msg.Value(),
-		HeaderData:    headers,
 		TimestampData: msg.Timestamp(),
 	}
+
+	msg.Headers().Range(func(key string, value []byte) bool {
+		im.HeaderData.Set(key, value)
+		return true
+	})
+
+	return im
 }
 
 // Topic returns the topic name of the message.
@@ -152,10 +155,12 @@ type Header struct {
 	Value []byte
 }
 
-type HeaderList []Header
+type HeaderList struct {
+	list []Header
+}
 
 func (h *HeaderList) Get(key string) ([]byte, bool) {
-	for _, header := range *h {
+	for _, header := range h.list {
 		if string(header.Key) == key {
 			return header.Value, true
 		}
@@ -165,24 +170,24 @@ func (h *HeaderList) Get(key string) ([]byte, bool) {
 }
 
 func (h *HeaderList) Set(key string, value []byte) {
-	// find and update existing header
-	for i, header := range *h {
+	// find and update existing header in list to preserve order
+	for i, header := range h.list {
 		if string(header.Key) == key {
-			(*h)[i].Value = value
+			h.list[i].Value = value
 			return
 		}
 	}
 
 	// add new header if not found
-	*h = append(*h, Header{
+	h.list = append(h.list, Header{
 		Key:   []byte(key),
 		Value: value,
 	})
 }
 
 func (h *HeaderList) All() map[string][]byte {
-	result := make(map[string][]byte, len(*h))
-	for _, header := range *h {
+	result := make(map[string][]byte, len(h.list))
+	for _, header := range h.list {
 		result[string(header.Key)] = header.Value
 	}
 
@@ -190,58 +195,60 @@ func (h *HeaderList) All() map[string][]byte {
 }
 
 func (h *HeaderList) Delete(key string) {
-	newHeaders := make(HeaderList, 0, len(*h))
-	for _, header := range *h {
+	newHeaders := make([]Header, 0, len(h.list))
+	for _, header := range h.list {
 		if string(header.Key) != key {
 			newHeaders = append(newHeaders, header)
 		}
 	}
 
-	*h = newHeaders
+	h.list = newHeaders
 }
 
 func (h *HeaderList) Clone() Headers {
-	// deep copy the headers
-	cloned := make(HeaderList, len(*h))
-	for i, header := range *h {
-		cloned[i] = Header{
+	cloned := &HeaderList{
+		list: make([]Header, len(h.list)),
+	}
+
+	for i, header := range h.list {
+		cloned.list[i] = Header{
 			Key:   append([]byte(nil), header.Key...),
 			Value: append([]byte(nil), header.Value...),
 		}
 	}
 
-	return &cloned
+	return cloned
+}
+
+func (h *HeaderList) Range(fn func(key string, value []byte) bool) {
+	for _, header := range h.list {
+		if !fn(string(header.Key), header.Value) {
+			break
+		}
+	}
 }
 
 func GetHeaderValue[T any](h *HeaderList, key string) (T, bool) {
 	var (
-		zero     T
-		val      string
-		found    bool
-		keyBytes = []byte(key)
+		zero  T
+		val   []byte
+		found bool
 	)
 
-	for _, hdr := range *h {
-		if bytes.Equal(hdr.Key, keyBytes) {
-			val = string(hdr.Value)
-			found = true
-
-			break
-		}
-	}
-
+	val, found = h.Get(key)
 	if !found {
 		return zero, false
 	}
 
+	valStr := string(val)
 	var anyVal any = zero
 	switch anyVal.(type) {
 	case string:
-		v, ok := any(val).(T)
+		v, ok := any(valStr).(T)
 
 		return v, ok
 	case int:
-		i, err := strconv.Atoi(val)
+		i, err := strconv.Atoi(valStr)
 		if err != nil {
 			return zero, false
 		}
@@ -250,7 +257,7 @@ func GetHeaderValue[T any](h *HeaderList, key string) (T, bool) {
 
 		return v, ok
 	case time.Time:
-		unix, err := strconv.ParseInt(val, 10, 64)
+		unix, err := strconv.ParseInt(valStr, 10, 64)
 		if err != nil {
 			return zero, false
 		}
@@ -281,21 +288,7 @@ func SetHeader[T any](h *HeaderList, key string, value T) error {
 		return fmt.Errorf("SetHeader: unsupported type %T (supported: string, int, time.Time)", value)
 	}
 
-	keyBytes := []byte(key)
-
-	// check if the key already exists to update it
-	for i, hdr := range *h {
-		if bytes.Equal(hdr.Key, keyBytes) {
-			(*h)[i].Value = []byte(valStr)
-			return nil
-		}
-	}
-
-	// if not found, append a new header
-	*h = append(*h, Header{
-		Key:   keyBytes,
-		Value: []byte(valStr),
-	})
+	h.Set(key, []byte(valStr))
 
 	return nil
 }

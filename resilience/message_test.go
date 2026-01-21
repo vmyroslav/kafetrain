@@ -53,7 +53,7 @@ func TestHeaderListUpdate(t *testing.T) {
 
 	assert.True(t, ok, "value should be found")
 	assert.Equal(t, "value-2", value, "expected updated value")
-	assert.Len(t, hl, 1, "should have only one header, not duplicates")
+	assert.Len(t, hl.list, 1, "should have only one header, not duplicates")
 }
 
 func TestHeaderGet(t *testing.T) {
@@ -99,5 +99,5 @@ func TestSetHeader_UnsupportedType(t *testing.T) {
 	assert.Contains(t, err.Error(), "bool")
 
 	// Verify no headers were added
-	assert.Empty(t, hl)
+	assert.Empty(t, hl.list)
 }

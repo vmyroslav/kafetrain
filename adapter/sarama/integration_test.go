@@ -1016,13 +1016,15 @@ func (h *dlqTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim
 				"payload", payload,
 			)
 
+			im := &resilience.InternalMessage{
+				KeyData:    msg.Key,
+				Payload:    msg.Value,
+				HeaderData: mapSaramaHeaders(msg.Headers),
+			}
+			im.SetTopic(msg.Topic)
 			err := h.tracker.SendToDLQ(
 				session.Context(),
-				&resilience.InternalMessage{
-					KeyData:    msg.Key,
-					Payload:    msg.Value,
-					HeaderData: mapSaramaHeaders(msg.Headers),
-				},
+				im,
 				fmt.Errorf("max retries exceeded"),
 			)
 			if err != nil {
@@ -1062,12 +1064,9 @@ func (h *dlqTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim
 
 // mapSaramaHeaders converts Sarama headers to retry.HeaderList
 func mapSaramaHeaders(headers []*sarama.RecordHeader) resilience.HeaderList {
-	result := make(resilience.HeaderList, 0, len(headers))
+	result := resilience.HeaderList{}
 	for _, h := range headers {
-		result = append(result, resilience.Header{
-			Key:   h.Key,
-			Value: h.Value,
-		})
+		result.Set(string(h.Key), h.Value)
 	}
 	return result
 }
@@ -1306,13 +1305,15 @@ func (h *dlqFreeTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 				"payload", payload,
 			)
 
+			im := &resilience.InternalMessage{
+				KeyData:    msg.Key,
+				Payload:    msg.Value,
+				HeaderData: mapSaramaHeaders(msg.Headers),
+			}
+			im.SetTopic(msg.Topic)
 			err := h.tracker.SendToDLQ(
 				session.Context(),
-				&resilience.InternalMessage{
-					KeyData:    msg.Key,
-					Payload:    msg.Value,
-					HeaderData: mapSaramaHeaders(msg.Headers),
-				},
+				im,
 				fmt.Errorf("max retries exceeded"),
 			)
 			if err != nil {

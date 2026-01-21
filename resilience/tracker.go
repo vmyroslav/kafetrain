@@ -428,13 +428,15 @@ func (t *ErrorTracker) publishToRetry(
 	lastError error,
 	originalTopic string,
 ) error {
-	retryHeaders := make(HeaderList, 0, len(msg.HeaderData)+6)
-	for _, h := range msg.HeaderData {
+	retryHeaders := HeaderList{
+		list: make([]Header, 0, len(msg.HeaderData.list)+6),
+	}
+	for _, h := range msg.HeaderData.list {
 		key := string(h.Key)
 		if key != HeaderRetryAttempt && key != HeaderRetryMax &&
 			key != HeaderRetryNextTime && key != HeaderRetryOriginalTime &&
 			key != HeaderRetryReason && key != HeaderID && key != HeaderRetry {
-			retryHeaders = append(retryHeaders, h)
+			retryHeaders.Set(key, h.Value)
 		}
 	}
 
@@ -478,12 +480,14 @@ func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg Message, lastError err
 	originalTime, _ := GetHeaderValue[time.Time](&internalMsg.HeaderData, HeaderRetryOriginalTime)
 
 	// Copy original message headers (excluding retry headers)
-	dlqHeaders := make(HeaderList, 0, len(internalMsg.HeaderData)+4)
-	for _, h := range internalMsg.HeaderData {
+	dlqHeaders := HeaderList{
+		list: make([]Header, 0, len(internalMsg.HeaderData.list)+4),
+	}
+	for _, h := range internalMsg.HeaderData.list {
 		key := string(h.Key)
 		if key != HeaderRetryAttempt && key != HeaderRetryMax &&
 			key != HeaderRetryNextTime && key != HeaderID && key != HeaderRetry {
-			dlqHeaders = append(dlqHeaders, h)
+			dlqHeaders.Set(key, h.Value)
 		}
 	}
 

@@ -127,6 +127,14 @@ func (h *Headers) Clone() resilience.Headers {
 	return &Headers{headers: cloned}
 }
 
+func (h *Headers) Range(fn func(key string, value []byte) bool) {
+	for _, header := range h.headers {
+		if !fn(string(header.Key), header.Value) {
+			break
+		}
+	}
+}
+
 // ToSaramaHeaders converts retry.Headers to Sarama RecordHeaders.
 func ToSaramaHeaders(headers resilience.Headers) []sarama.RecordHeader {
 	if h, ok := headers.(*Headers); ok {
@@ -139,14 +147,14 @@ func ToSaramaHeaders(headers resilience.Headers) []sarama.RecordHeader {
 	}
 
 	// convert from generic Headers to Sarama format
-	all := headers.All()
-	result := make([]sarama.RecordHeader, 0, len(all))
-	for k, v := range all {
+	result := make([]sarama.RecordHeader, 0)
+	headers.Range(func(k string, v []byte) bool {
 		result = append(result, sarama.RecordHeader{
 			Key:   []byte(k),
 			Value: v,
 		})
-	}
+		return true
+	})
 
 	return result
 }
