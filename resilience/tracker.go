@@ -25,6 +25,7 @@ type ErrorTracker struct {
 	mu              sync.RWMutex
 	startedTopics   map[string]struct{}
 	cancels         map[string]context.CancelFunc
+	wg              sync.WaitGroup
 }
 
 // NewErrorTracker creates a new ErrorTracker.
@@ -106,6 +107,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string, handler Consumer
 	}
 
 	// background workers use the same derived context
+	t.wg.Add(1)
 	return t.StartRetryWorker(workerCtx, topic, handler)
 }
 
@@ -119,6 +121,9 @@ func (t *ErrorTracker) Close() error {
 	t.cancels = make(map[string]context.CancelFunc)
 	t.startedTopics = make(map[string]struct{})
 	t.mu.Unlock()
+
+	// Wait for all background workers to finish
+	t.wg.Wait()
 
 	return t.coordinator.Close()
 }
@@ -218,6 +223,7 @@ func (t *ErrorTracker) StartRetryWorker(ctx context.Context, topic string, handl
 	}
 
 	go func() {
+		defer t.wg.Done()
 		defer retryConsumer.Close()
 
 		backoff := 5 * time.Second

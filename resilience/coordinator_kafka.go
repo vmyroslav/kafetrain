@@ -27,6 +27,7 @@ type KafkaStateCoordinator struct {
 	topic           string
 	mu              sync.RWMutex
 	cancel          context.CancelFunc
+	wg              sync.WaitGroup
 }
 
 // NewKafkaStateCoordinator creates a coordinator using a compacted Kafka topic for distributed state.
@@ -80,11 +81,12 @@ func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 
 func (k *KafkaStateCoordinator) Close() error {
 	k.mu.Lock()
-	defer k.mu.Unlock()
-
 	if k.cancel != nil {
 		k.cancel()
 	}
+	k.mu.Unlock()
+
+	k.wg.Wait()
 
 	return nil
 }
@@ -387,7 +389,9 @@ func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic
 	}
 
 	// TODO: propagate errors back to the tracker
+	k.wg.Add(1)
 	go func() {
+		defer k.wg.Done()
 		defer consumer.Close()
 
 		backoff := 5 * time.Second
