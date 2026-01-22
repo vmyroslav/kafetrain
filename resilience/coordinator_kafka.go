@@ -31,7 +31,6 @@ type KafkaStateCoordinator struct {
 }
 
 // NewKafkaStateCoordinator creates a coordinator using a compacted Kafka topic for distributed state.
-// Note: Consider extracting coordinator-specific config fields if the Config struct grows too large.
 func NewKafkaStateCoordinator(
 	cfg *Config,
 	logger Logger,
@@ -60,7 +59,7 @@ func (k *KafkaStateCoordinator) IsLocked(ctx context.Context, msg *InternalMessa
 func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 	k.mu.Lock()
 	k.topic = topic
-	// Create a derived context for background workers that we can cancel via Close()
+	// create a derived context for background workers that we can cancel
 	workerCtx, cancel := context.WithCancel(ctx)
 	k.cancel = cancel
 	k.mu.Unlock()
@@ -77,20 +76,6 @@ func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 
 	// start monitoring of redirect topic
 	return k.startRedirectConsumer(workerCtx, topic)
-}
-
-func (k *KafkaStateCoordinator) Close() error {
-	k.mu.Lock()
-
-	if k.cancel != nil {
-		k.cancel()
-	}
-
-	k.mu.Unlock()
-
-	k.wg.Wait()
-
-	return nil
 }
 
 // Acquire locks the key for the given message.
@@ -172,7 +157,7 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 	tombstoneMsg := &InternalMessage{
 		topic:         k.redirectTopic(topic),
 		KeyData:       []byte(id),
-		Payload:       nil, // Tombstone
+		Payload:       nil, // tombstone
 		HeaderData:    headers,
 		TimestampData: time.Now(),
 	}
@@ -220,7 +205,7 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 
 	redirectTopic := k.redirectTopic(topic)
 
-	// 1. Get High Water Marks for the redirect topic
+	// get High Water Marks for the redirect topic
 	metadata, err := k.admin.DescribeTopics(ctx, []string{redirectTopic})
 	if err != nil {
 		return fmt.Errorf("failed to describe redirect topic for sync: %w", err)
@@ -266,6 +251,20 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func (k *KafkaStateCoordinator) Close() error {
+	k.mu.Lock()
+
+	if k.cancel != nil {
+		k.cancel()
+	}
+
+	k.mu.Unlock()
+
+	k.wg.Wait()
+
+	return nil
 }
 
 func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic string) error {
