@@ -59,10 +59,20 @@ func NewKafkaStateCoordinator(
 	return k
 }
 
+// IsLocked checks if a message's key is currently locked in the local state.
+// This method delegates to the underlying LocalStateCoordinator for fast, thread-safe lock check.
 func (k *KafkaStateCoordinator) IsLocked(ctx context.Context, msg *InternalMessage) bool {
 	return k.local.IsLocked(ctx, msg)
 }
 
+// Start initializes the coordinator for the given topic and begins background synchronization.
+// This method performs three steps:
+//  1. Ensures the compacted redirect topic exists (creates if needed) - blocking
+//  2. Restores local state by consuming the redirect topic's full history - blocking
+//  3. Launches a background consumer to keep state synchronized - non-blocking
+//
+// This is a blocking call that restores full state before returning. Once it completes
+// successfully, the coordinator is ready to use with accurate lock state.
 func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 	k.mu.Lock()
 	k.topic = topic
@@ -86,6 +96,8 @@ func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 }
 
 // Acquire locks the key for the given message.
+// It uses optimistic locking: updates local state immediately, then publishes to the distributed redirect topic.
+// On publish failure, local state is rolled back and error returned.
 func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error {
 	id, ok := GetHeaderValue[string](&msg.HeaderData, HeaderID)
 	if !ok {
@@ -140,6 +152,10 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 	return nil
 }
 
+// Release unlocks the key for the given message across all coordinator instances.
+// It publishes a tombstone (null payload) to the compacted redirect topic,
+// which signals all coordinators to remove the lock. Uses optimistic locking
+// with rollback on failure, similar to Acquire.
 func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessage) error {
 	id, ok := GetHeaderValue[string](&msg.HeaderData, HeaderID)
 	if !ok {
@@ -316,6 +332,9 @@ func isCaughtUpOffsets(consumedOffsets, targetOffsets map[int32]int64) bool {
 	return true
 }
 
+// Close gracefully shuts down the coordinator by stopping background workers
+// and waiting for them to complete. This method cancels the background redirect
+// consumer and blocks until it exits cleanly.
 func (k *KafkaStateCoordinator) Close() error {
 	k.mu.Lock()
 
@@ -330,6 +349,10 @@ func (k *KafkaStateCoordinator) Close() error {
 	return nil
 }
 
+// ensureRedirectTopic creates the compacted redirect topic if it doesn't exist.
+// The redirect topic uses log compaction to retain only the latest lock state
+// per key, and configures segment.ms=100 for fast tombstone propagation.
+// When auto-creation is disabled, this method verifies the topic exists.
 func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic string) error {
 	redirectTopic := k.redirectTopic(topic)
 
@@ -366,6 +389,10 @@ func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic s
 	})
 }
 
+// restoreState rebuilds local lock state by consuming the redirect topic's history.
+// This is called once during Start() to synchronize with the distributed state
+// before processing begins. Uses an ephemeral consumer group that is deleted
+// after restoration completes. Times out if HWM is not reached within the configured window.
 func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) error {
 	// 1. Get High Water Marks for the redirect topic
 	metadata, err := k.admin.DescribeTopics(ctx, []string{k.redirectTopic(topic)})
@@ -443,6 +470,10 @@ func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) 
 	return nil
 }
 
+// startRedirectConsumer launches a background goroutine that continuously consumes
+// the redirect topic to keep local state synchronized with other coordinator instances.
+// The consumer automatically restarts on errors with exponential backoff.
+// Consumer group name: {groupID}-redirect.
 func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic string) error {
 	redirectCfg := *k.cfg
 	redirectCfg.GroupID = k.cfg.GroupID + "-redirect"
@@ -497,6 +528,9 @@ func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic
 	return nil
 }
 
+// processRedirectMessage handles incoming messages from the redirect topic.
+// Tombstones (null payload) trigger lock release, while regular messages trigger acquisition.
+// Ignores echo messages from the same coordinator instance to avoid redundant processing.
 func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg Message) error {
 	// ignore echo messages from self
 	if originID, ok := msg.Headers().Get(HeaderCoordinatorID); ok {
@@ -528,8 +562,10 @@ func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg 
 	return k.local.Acquire(ctx, originalMsg, originalMsg.topic)
 }
 
-// releaseMessage releases a lock based on a received message.
-// This is used when processing tombstones from other coordinators.
+// releaseMessage releases a lock based on a received tombstone message.
+// This is called when processing tombstones from other coordinator instances,
+// ensuring all coordinators maintain consistent lock state. Requires topic and
+// key headers to identify the lock to release.
 func (k *KafkaStateCoordinator) releaseMessage(ctx context.Context, msg *InternalMessage) error {
 	if _, ok := GetHeaderValue[string](&msg.HeaderData, HeaderTopic); !ok {
 		return errors.New("topic header not found")
@@ -549,6 +585,9 @@ func (k *KafkaStateCoordinator) redirectTopic(topic string) string {
 	return k.cfg.RedirectTopicPrefix + "_" + topic
 }
 
+// redirectFillHandler is a one-time consumer handler used during state restoration.
+// It tracks consumed offsets and cancels consumption once all partitions reach
+// their target High Water Marks, ensuring complete state reconstruction.
 type redirectFillHandler struct {
 	k               *KafkaStateCoordinator
 	targetOffsets   map[int32]int64
@@ -557,6 +596,8 @@ type redirectFillHandler struct {
 	mu              sync.Mutex
 }
 
+// Handle processes a redirect message during state restoration and tracks progress.
+// Once all partitions reach their target offsets, it cancels the restoration consumer.
 func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
 	if err := r.k.processRedirectMessage(ctx, msg); err != nil {
 		return err
@@ -575,10 +616,15 @@ func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
 	return nil
 }
 
+// RedirectHandler is the ongoing background consumer handler for the redirect topic.
+// It keeps the coordinator's local state synchronized with other instances by
+// processing lock acquisitions and releases from the distributed compacted topic.
 type RedirectHandler struct {
 	k *KafkaStateCoordinator
 }
 
+// Handle processes a redirect message during normal operation and updates local state.
+// It broadcasts offset updates to wake any goroutines waiting in Synchronize().
 func (r *RedirectHandler) Handle(ctx context.Context, msg Message) error {
 	if err := r.k.processRedirectMessage(ctx, msg); err != nil {
 		return err

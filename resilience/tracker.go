@@ -13,7 +13,11 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// ErrorTracker is the library-agnostic retry tracking implementation.
+// ErrorTracker is the main entry point for the resilience library.
+// It orchestrates the complete 3-topic retry pattern: retry topic for messages,
+// redirect topic for distributed locking, and DLQ for unrecoverable failures.
+// This implementation is library-agnostic, working with any Kafka client through
+// the Producer/Consumer/Admin interfaces.
 type ErrorTracker struct {
 	coordinator     StateCoordinator
 	backoff         BackoffStrategy
@@ -28,7 +32,10 @@ type ErrorTracker struct {
 	wg              sync.WaitGroup
 }
 
-// NewErrorTracker creates a new ErrorTracker.
+// NewErrorTracker creates a new ErrorTracker with the provided dependencies.
+// All parameters except backoff are required. If backoff is nil, it defaults
+// to ExponentialBackoff. Returns an error if any required parameter is missing
+// or if the configuration is invalid (e.g., missing GroupID).
 func NewErrorTracker(
 	cfg *Config,
 	logger Logger,
@@ -85,9 +92,14 @@ func NewErrorTracker(
 	return &t, nil
 }
 
-// Start initializes the complete resilience loop for a topic.
-// 1. It starts the control plane (Coordinator) to manage ordering locks.
-// 2. It starts the data plane (StartRetryWorker) to process retry messages.
+// Start initializes the complete resilience infrastructure for a topic.
+// This method sets up both the control plane and data plane:
+//  1. Control plane: Starts the coordinator to manage distributed ordering locks
+//  2. Data plane: Starts the retry worker to process messages from the retry topic
+//
+// This is a blocking call during coordinator startup (state restoration), then launches
+// a background retry worker. Idempotent: calling Start multiple times for the same
+// topic is safe and will no-op. Returns an error if initialization fails.
 func (t *ErrorTracker) Start(ctx context.Context, topic string, handler ConsumerHandler) error {
 	t.mu.Lock()
 
@@ -121,7 +133,10 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string, handler Consumer
 	return t.StartRetryWorker(workerCtx, topic, handler)
 }
 
-// Close stops all background workers and releases resources.
+// Close gracefully shuts down all background workers and releases resources.
+// It cancels all topic-specific contexts, waits for retry workers to complete,
+// and closes the coordinator. After Close returns, the ErrorTracker should not
+// be used. This method blocks until all goroutines exit cleanly.
 func (t *ErrorTracker) Close() error {
 	t.mu.Lock()
 
@@ -270,11 +285,19 @@ func (t *ErrorTracker) StartRetryWorker(ctx context.Context, topic string, handl
 	return nil
 }
 
+// retryWorkerHandler wraps user business logic with retry orchestration.
+// It handles the complete retry lifecycle: backoff waiting, user processing,
+// and result handling (Free on success, Redirect on failure).
 type retryWorkerHandler struct {
 	t           *ErrorTracker
 	userHandler ConsumerHandler
 }
 
+// Handle processes a message from the retry topic through the complete lifecycle:
+//  1. Wait for backoff delay (reads HeaderRetryNextTime)
+//  2. Execute user's business logic
+//  3. On success: Free the lock (allows subsequent messages with same key)
+//  4. On failure: Redirect again (or to DLQ if max retries exceeded)
 func (h *retryWorkerHandler) Handle(ctx context.Context, msg Message) error {
 	// 1. Wait for backoff delay
 	if err := h.t.WaitForRetryTime(ctx, msg); err != nil {
@@ -293,8 +316,11 @@ func (h *retryWorkerHandler) Handle(ctx context.Context, msg Message) error {
 	return h.t.Free(ctx, msg)
 }
 
-// StartTracking starts the coordination layer (control plane) for the topic.
-// This is required for Redirect/Free/IsInRetryChain to work.
+// StartTracking starts only the coordination layer (control plane) for the topic.
+// This is a lightweight alternative to Start() when you want to manage retry workers
+// manually. It ensures topics exist and initializes the coordinator for lock management.
+// Use this when you need Redirect/Free/IsInRetryChain functionality without the
+// automatic retry worker. This is a blocking call during coordinator startup.
 func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
 	// ensure topics exist
 	if err := t.ensureTopicsExist(ctx, topic); err != nil {
@@ -304,22 +330,33 @@ func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
 	return t.coordinator.Start(ctx, topic)
 }
 
-// Synchronize ensures the internal state is consistent with the distributed log.
-// This should be called during the Rebalance phase (e.g. in Sarama's Setup()).
+// Synchronize blocks until the coordinator's local state is fully synchronized
+// with the distributed redirect topic. This ensures the coordinator has consumed
+// all pending lock updates before processing resumes. Call this during partition
+// rebalancing (e.g., in Sarama's ConsumerGroupHandler.Setup()) to guarantee
+// consistent ordering guarantees after partition reassignment.
 func (t *ErrorTracker) Synchronize(ctx context.Context) error {
 	return t.coordinator.Synchronize(ctx)
 }
 
-// IsInRetryChain checks if a message is already in the retry chain.
-// Returns true if the message key is currently being tracked for retries.
+// IsInRetryChain checks if a message key is currently locked in the retry chain.
+// Returns true if the key is being processed or waiting in the retry topic.
+// This is used to enforce strict ordering: new messages with locked keys must
+// wait until the predecessor completes. This is a fast, local lock check with
+// no network I/O.
 func (t *ErrorTracker) IsInRetryChain(msg Message) bool {
 	internalMsg := NewFromMessage(msg)
 	return t.coordinator.IsLocked(context.Background(), internalMsg)
 }
 
-// NewResilientHandler wraps a user handler with resilience logic for the MAIN topic.
-// It automatically handles strict ordering checks and error redirection.
-// Usage: mainConsumer.Consume(ctx, topics, tracker.NewResilientHandler(myHandler))
+// NewResilientHandler wraps a user handler with automatic resilience for MAIN topic consumption.
+// It provides two key guarantees:
+//  1. Strict Ordering: If a message key is in the retry chain, new messages with the
+//     same key are automatically redirected to preserve ordering
+//  2. Automatic Retry: Failed messages are sent to the retry topic with backoff metadata
+//
+// This is the recommended pattern for main topic consumers. Retry workers should NOT
+// use this wrapper (they need Free() on success, which this handler doesn't call).
 func (t *ErrorTracker) NewResilientHandler(handler ConsumerHandler) ConsumerHandler {
 	return ConsumerHandlerFunc(func(ctx context.Context, msg Message) error {
 		// 1. Strict Ordering Check
@@ -341,22 +378,35 @@ func (t *ErrorTracker) NewResilientHandler(handler ConsumerHandler) ConsumerHand
 	})
 }
 
-// Redirect sends a failed message to the retry topic for reprocessing.
-// This is the primary public API for standalone ErrorTracker usage.
+// Redirect sends a failed message to the retry topic for reprocessing with backoff.
+// This method:
+//  1. Acquires a distributed lock on the message key (via coordinator)
+//  2. Publishes the message to the retry topic with updated retry metadata
+//  3. Checks max retries and sends to DLQ if exceeded
+//
+// If the publish fails, the lock is rolled back to prevent "zombie keys".
+// This is the primary public API for manual ErrorTracker usage.
 func (t *ErrorTracker) Redirect(ctx context.Context, msg Message, lastError error) error {
 	internalMsg := NewFromMessage(msg)
 
 	return t.redirectMessageWithError(ctx, internalMsg, lastError)
 }
 
-// Free removes a successfully processed message from the retry chain.
-// Releases the lock via the coordinator.
+// Free releases the distributed lock for a successfully processed message.
+// This signals to all coordinators that the message key is no longer in the
+// retry chain, allowing subsequent messages with the same key to be processed.
+// Call this after successfully processing a message from the RETRY topic.
+// Never call this for main topic messages (they don't hold locks).
 func (t *ErrorTracker) Free(ctx context.Context, msg Message) error {
 	internalMsg := NewFromMessage(msg)
 	return t.coordinator.Release(ctx, internalMsg)
 }
 
-// redirectMessageWithError is the internal InternalMessage-based redirect implementation.
+// redirectMessageWithError is the internal redirect implementation using InternalMessage.
+// It calculates retry metadata (attempt count, backoff delay, next retry time),
+// performs atomic lock acquisition and message publishing with compensating rollback,
+// and handles max retries exceeded by sending to DLQ. This is where the core
+// retry orchestration logic lives.
 func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *InternalMessage, lastError error) error {
 	// Calculate retry metadata
 	currentAttempt, _ := GetHeaderValue[int](&msg.HeaderData, HeaderRetryAttempt)
@@ -435,6 +485,10 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 	return nil
 }
 
+// publishToRetry constructs and publishes a retry message with updated metadata headers.
+// It preserves the original message payload and most headers while updating retry-specific
+// headers (attempt count, next retry time, error reason, etc.). Original user headers
+// are preserved to maintain context across retries.
 func (t *ErrorTracker) publishToRetry(
 	ctx context.Context,
 	msg *InternalMessage,
@@ -483,6 +537,9 @@ func (t *ErrorTracker) publishToRetry(
 }
 
 // SendToDLQ sends a message that has exceeded max retries to the Dead Letter Queue.
+// It preserves the original payload and most headers while adding DLQ-specific metadata
+// (failure reason, timestamp, source topic, retry attempts). The DLQ topic uses infinite
+// retention (-1) to preserve failed messages for investigation and manual recovery.
 func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg Message, lastError error) error {
 	internalMsg := NewFromMessage(msg)
 
@@ -537,18 +594,28 @@ func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg Message, lastError err
 	return t.producer.Produce(ctx, dlqMsg.Topic(), dlqMsg)
 }
 
+// RetryTopic returns the retry topic name for a given primary topic.
+// Naming convention: {RetryTopicPrefix}_{topic}
 func (t *ErrorTracker) RetryTopic(topic string) string {
 	return t.cfg.RetryTopicPrefix + "_" + topic
 }
 
+// RedirectTopic returns the redirect (compacted) topic name for a given primary topic.
+// Naming convention: {RedirectTopicPrefix}_{topic}
 func (t *ErrorTracker) RedirectTopic(topic string) string {
 	return t.cfg.RedirectTopicPrefix + "_" + topic
 }
 
+// DLQTopic returns the Dead Letter Queue topic name for a given primary topic.
+// Naming convention: {DLQTopicPrefix}_{topic}
 func (t *ErrorTracker) DLQTopic(topic string) string {
 	return t.cfg.DLQTopicPrefix + "_" + topic
 }
 
+// handleMaxRetriesExceeded is called when a message has exhausted all retry attempts.
+// It sends the message to DLQ and optionally releases the lock based on FreeOnDLQ config.
+// If FreeOnDLQ is false, the key remains locked, preventing new messages with the same
+// key from processing until manual intervention.
 func (t *ErrorTracker) handleMaxRetriesExceeded(ctx context.Context, message *InternalMessage, currentAttempt, maxRetries int) error {
 	t.logger.Warn("max retries exceeded, sending to DLQ",
 		"topic", message.topic,
@@ -594,6 +661,11 @@ func (t *ErrorTracker) handleMaxRetriesExceeded(ctx context.Context, message *In
 	return nil
 }
 
+// WaitForRetryTime blocks until the scheduled retry time arrives.
+// It reads the HeaderRetryNextTime header and sleeps until that timestamp.
+// This implements the backoff delay: messages are consumed from the retry topic
+// immediately but processing is deferred until the backoff period expires.
+// Returns immediately if no retry time header exists or if the time has passed.
 func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, msg Message) error {
 	// check if this message has a scheduled retry time
 	nextTimeBytes, ok := msg.Headers().Get(HeaderRetryNextTime)
@@ -642,23 +714,31 @@ func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, msg Message) error 
 }
 
 // RetriableError wraps an error to indicate if it should be retried.
+// This allows fine-grained control over retry behavior: some errors may be
+// permanent (e.g., validation failures) and shouldn't be retried, while others
+// are transient (e.g., network timeouts) and should be retried.
 type RetriableError struct {
 	Origin error
 	Retry  bool
 }
 
+// NewRetriableError creates a RetriableError with the specified retry behavior.
+// Use shouldRetry=true for transient errors, false for permanent errors.
 func NewRetriableError(origin error, shouldRetry bool) *RetriableError {
 	return &RetriableError{Origin: origin, Retry: shouldRetry}
 }
 
+// Error returns the error message from the wrapped origin error.
 func (e RetriableError) Error() string {
 	return e.Origin.Error()
 }
 
+// Unwrap returns the wrapped origin error for use with errors.Is/As.
 func (e RetriableError) Unwrap() error {
 	return e.Origin
 }
 
+// ShouldRetry returns true if this error should trigger a retry, false otherwise.
 func (e RetriableError) ShouldRetry() bool {
 	return e.Retry
 }
