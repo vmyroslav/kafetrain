@@ -26,6 +26,7 @@ type KafkaStateCoordinator struct {
 	instanceID      string
 	topic           string
 	mu              sync.RWMutex
+	offsetsCond     *sync.Cond // Signals when consumedOffsets are updated
 	cancel          context.CancelFunc
 	wg              sync.WaitGroup
 }
@@ -39,7 +40,7 @@ func NewKafkaStateCoordinator(
 	admin Admin,
 	errCh chan<- error,
 ) *KafkaStateCoordinator {
-	return &KafkaStateCoordinator{
+	k := &KafkaStateCoordinator{
 		local:           NewLocalStateCoordinator(),
 		producer:        producer,
 		consumerFactory: consumerFactory,
@@ -50,6 +51,9 @@ func NewKafkaStateCoordinator(
 		instanceID:      uuid.New().String(),
 		consumedOffsets: make(map[int32]int64),
 	}
+	k.offsetsCond = sync.NewCond(&k.mu)
+
+	return k
 }
 
 func (k *KafkaStateCoordinator) IsLocked(ctx context.Context, msg *InternalMessage) bool {
@@ -205,7 +209,7 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 
 	redirectTopic := k.redirectTopic(topic)
 
-	// get High Water Marks for the redirect topic
+	// Get High Water Marks for the redirect topic
 	metadata, err := k.admin.DescribeTopics(ctx, []string{redirectTopic})
 	if err != nil {
 		return fmt.Errorf("failed to describe redirect topic for sync: %w", err)
@@ -217,40 +221,92 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 
 	targetOffsets := metadata[0].PartitionOffsets()
 
-	// 2. Wait until we reach them
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
+	// Check if already caught up
+	k.mu.RLock()
 
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ticker.C:
-			k.mu.RLock()
+	if k.isCaughtUp(targetOffsets) {
+		k.mu.RUnlock()
 
-			allCaughtUp := true
+		return nil
+	}
 
-			for p, target := range targetOffsets {
-				if target == 0 {
-					continue
-				}
+	k.mu.RUnlock()
 
-				consumed, ok := k.consumedOffsets[p]
-				// target is HWM (next offset to be written).
-				// We are caught up if we processed (target - 1).
-				if !ok || consumed < target-1 {
-					allCaughtUp = false
-					break
-				}
-			}
+	k.logger.Debug("waiting for redirect consumer to catch up", "topic", redirectTopic, "targets", targetOffsets)
 
-			k.mu.RUnlock()
+	// Set up timeout
+	timeout := 30 * time.Second
+	if k.cfg.StateRestoreTimeoutMs > 0 {
+		timeout = time.Duration(k.cfg.StateRestoreTimeoutMs) * time.Millisecond
+	}
 
-			if allCaughtUp {
-				return nil
+	deadline := time.Now().Add(timeout)
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	// Wait for condition variable signal or timeout
+	done := make(chan struct{})
+
+	go func() {
+		k.mu.Lock()
+		defer k.mu.Unlock()
+
+		for !k.isCaughtUp(targetOffsets) {
+			k.offsetsCond.Wait()
+
+			// Check if we've exceeded the deadline
+			if time.Now().After(deadline) {
+				close(done)
+
+				return
 			}
 		}
+
+		close(done)
+	}()
+
+	select {
+	case <-ctx.Done():
+		k.offsetsCond.Broadcast() // Wake up the goroutine
+		return ctx.Err()
+	case <-timer.C:
+		k.offsetsCond.Broadcast() // Wake up the goroutine
+
+		k.mu.RLock()
+		defer k.mu.RUnlock()
+
+		return fmt.Errorf("timeout waiting for redirect consumer to catch up: consumed=%v, targets=%v", k.consumedOffsets, targetOffsets)
+	case <-done:
+		k.logger.Debug("redirect consumer caught up", "topic", redirectTopic)
+		return nil
 	}
+}
+
+// isCaughtUp checks if consumedOffsets have reached targetOffsets.
+// Caller must hold k.mu (at least RLock).
+func (k *KafkaStateCoordinator) isCaughtUp(targetOffsets map[int32]int64) bool {
+	return isCaughtUpOffsets(k.consumedOffsets, targetOffsets)
+}
+
+// isCaughtUpOffsets checks if consumedOffsets have reached targetOffsets.
+// target is HWM (next offset to be written), so we are caught up if we processed (target - 1).
+func isCaughtUpOffsets(consumedOffsets, targetOffsets map[int32]int64) bool {
+	for p, target := range targetOffsets {
+		if target == 0 {
+			// Empty partition
+			continue
+		}
+
+		consumed, ok := consumedOffsets[p]
+		// target is HWM (next offset to be written).
+		// We are caught up if we processed (target - 1).
+		if !ok || consumed < target-1 {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (k *KafkaStateCoordinator) Close() error {
@@ -502,28 +558,10 @@ func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	p := msg.Partition()
-	r.consumedOffsets[p] = msg.Offset()
+	r.consumedOffsets[msg.Partition()] = msg.Offset()
 
 	// Check if all partitions have reached their target offset
-	allDone := true
-
-	for p, target := range r.targetOffsets {
-		if target == 0 {
-			// Empty partition, effectively done
-			continue
-		}
-
-		consumed, ok := r.consumedOffsets[p]
-		// target is the HWM (next offset to be written).
-		// So if we processed (target - 1), we are up to date.
-		if !ok || consumed < target-1 {
-			allDone = false
-			break
-		}
-	}
-
-	if allDone {
+	if isCaughtUpOffsets(r.consumedOffsets, r.targetOffsets) {
 		r.cancel()
 	}
 
@@ -541,6 +579,7 @@ func (r *RedirectHandler) Handle(ctx context.Context, msg Message) error {
 
 	r.k.mu.Lock()
 	r.k.consumedOffsets[msg.Partition()] = msg.Offset()
+	r.k.offsetsCond.Broadcast() // Wake up any goroutines waiting in Synchronize
 	r.k.mu.Unlock()
 
 	return nil

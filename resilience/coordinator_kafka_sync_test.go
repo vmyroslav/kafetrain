@@ -108,7 +108,11 @@ func TestKafkaStateCoordinator_Synchronize_BlocksUntilCaughtUp(t *testing.T) {
 
 	coordinator := NewKafkaStateCoordinator(
 		&Config{RedirectTopicPrefix: "redirect"},
-		&LoggerMock{},
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {
+				// no-op
+			},
+		},
 		&ProducerMock{},
 		&ConsumerFactoryMock{},
 		mockAdmin,
@@ -137,7 +141,8 @@ func TestKafkaStateCoordinator_Synchronize_BlocksUntilCaughtUp(t *testing.T) {
 
 	// Simulate background consumer updating the offset
 	coordinator.mu.Lock()
-	coordinator.consumedOffsets[0] = 9 // Catch up
+	coordinator.consumedOffsets[0] = 9  // Catch up
+	coordinator.offsetsCond.Broadcast() // Signal that offsets updated
 	coordinator.mu.Unlock()
 
 	// Now it should complete
@@ -164,7 +169,11 @@ func TestKafkaStateCoordinator_Synchronize_ContextCancellation(t *testing.T) {
 
 	coordinator := NewKafkaStateCoordinator(
 		&Config{RedirectTopicPrefix: "redirect"},
-		&LoggerMock{},
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {
+				// no-op
+			},
+		},
 		&ProducerMock{},
 		&ConsumerFactoryMock{},
 		mockAdmin,
