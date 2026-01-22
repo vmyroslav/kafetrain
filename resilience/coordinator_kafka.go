@@ -15,20 +15,23 @@ import (
 // KafkaStateCoordinator implements StateCoordinator using a compacted Kafka topic and local memory.
 // It decorates LocalStateCoordinator to add distributed synchronization.
 type KafkaStateCoordinator struct {
+	cfg *Config
+
 	producer        Producer
 	consumerFactory ConsumerFactory
 	admin           Admin
 	logger          Logger
 	local           *LocalStateCoordinator
-	cfg             *Config
+
 	errors          chan<- error
 	consumedOffsets map[int32]int64
 	instanceID      string
 	topic           string
-	mu              sync.RWMutex
-	offsetsCond     *sync.Cond // Signals when consumedOffsets are updated
-	cancel          context.CancelFunc
-	wg              sync.WaitGroup
+
+	mu          sync.RWMutex
+	offsetsCond *sync.Cond // signals when consumedOffsets are updated
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 }
 
 // NewKafkaStateCoordinator creates a coordinator using a compacted Kafka topic for distributed state.
@@ -253,6 +256,10 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 		defer k.mu.Unlock()
 
 		for !k.isCaughtUp(targetOffsets) {
+			if ctx.Err() != nil {
+				return
+			}
+
 			k.offsetsCond.Wait()
 
 			// Check if we've exceeded the deadline
