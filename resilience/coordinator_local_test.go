@@ -5,7 +5,10 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+const testTopicChaos = "chaos-topic"
 
 func TestLocalStateCoordinator_Acquire(t *testing.T) {
 	t.Parallel()
@@ -19,7 +22,7 @@ func TestLocalStateCoordinator_Acquire(t *testing.T) {
 	}
 
 	err := coordinator.Acquire(ctx, msg, "orders")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.True(t, coordinator.IsLocked(ctx, msg))
 }
@@ -41,7 +44,7 @@ func TestLocalStateCoordinator_Release(t *testing.T) {
 
 	// release
 	err := coordinator.Release(ctx, msg)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.False(t, coordinator.IsLocked(ctx, msg))
 }
@@ -58,7 +61,7 @@ func TestLocalStateCoordinator_ReferenceCounting(t *testing.T) {
 
 	// first Lock
 	err := coordinator.Acquire(ctx, msg, topic)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.True(t, coordinator.IsLocked(ctx, msg))
 	count, _ := coordinator.lm.getRefCount(topic, key)
@@ -66,7 +69,7 @@ func TestLocalStateCoordinator_ReferenceCounting(t *testing.T) {
 
 	// second lock
 	err = coordinator.Acquire(ctx, msg, topic)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.True(t, coordinator.IsLocked(ctx, msg))
 	count, _ = coordinator.lm.getRefCount(topic, key)
@@ -74,7 +77,7 @@ func TestLocalStateCoordinator_ReferenceCounting(t *testing.T) {
 
 	// first release
 	err = coordinator.Release(ctx, msg)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// should STILL be locked (Ref count 2 -> 1)
 	assert.True(t, coordinator.IsLocked(ctx, msg))
@@ -83,7 +86,7 @@ func TestLocalStateCoordinator_ReferenceCounting(t *testing.T) {
 
 	// second release
 	err = coordinator.Release(ctx, msg)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// should be UNLOCKED (Ref count 1 -> 0)
 	assert.False(t, coordinator.IsLocked(ctx, msg))
@@ -132,7 +135,7 @@ func TestLocalStateCoordinator_Release_WithHeader(t *testing.T) {
 	releaseMsg.HeaderData.Set(HeaderTopic, []byte("orders"))
 
 	err := coordinator.Release(ctx, releaseMsg)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.False(t, coordinator.IsLocked(ctx, msg))
 }
@@ -204,7 +207,7 @@ func TestLocalStateCoordinator_Chaos(t *testing.T) {
 				// Select a key cyclically or semi-randomly
 				keyID := (routineID + j) % numKeys
 				keyStr := string([]byte{byte(keyID)}) // "0", "1", ...
-				topic := "chaos-topic"
+				topic := testTopicChaos
 
 				msg := &InternalMessage{topic: topic, KeyData: []byte(keyStr)}
 
@@ -227,7 +230,7 @@ func TestLocalStateCoordinator_Chaos(t *testing.T) {
 	// Verify all keys are unlocked and map is clean
 	for k := 0; k < numKeys; k++ {
 		keyStr := string([]byte{byte(k)})
-		topic := "chaos-topic"
+		topic := testTopicChaos
 		count, exists := coordinator.lm.getRefCount(topic, keyStr)
 
 		assert.False(t, exists, "Key %d should not exist in map", k)

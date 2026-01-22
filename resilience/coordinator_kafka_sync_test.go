@@ -7,7 +7,10 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+const testTopicOrders = "orders"
 
 func TestKafkaStateCoordinator_Synchronize_TopicNotStarted(t *testing.T) {
 	coordinator := NewKafkaStateCoordinator(
@@ -21,13 +24,13 @@ func TestKafkaStateCoordinator_Synchronize_TopicNotStarted(t *testing.T) {
 
 	// Should fail because Start() wasn't called (topic is empty)
 	err := coordinator.Synchronize(context.Background())
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Equal(t, "coordinator not started: topic is empty", err.Error())
 }
 
 func TestKafkaStateCoordinator_Synchronize_EmptyRedirectTopic(t *testing.T) {
 	mockAdmin := &AdminMock{
-		DescribeTopicsFunc: func(ctx context.Context, topics []string) ([]TopicMetadata, error) {
+		DescribeTopicsFunc: func(_ context.Context, _ []string) ([]TopicMetadata, error) {
 			// Return metadata indicating empty topic (or no partitions)
 			return []TopicMetadata{
 				&mockTopicMetadata{
@@ -50,7 +53,7 @@ func TestKafkaStateCoordinator_Synchronize_EmptyRedirectTopic(t *testing.T) {
 
 	// Manually set topic as if Start() was called
 	coordinator.mu.Lock()
-	coordinator.topic = "orders"
+	coordinator.topic = testTopicOrders
 	coordinator.mu.Unlock()
 
 	// Should return immediately
@@ -60,7 +63,7 @@ func TestKafkaStateCoordinator_Synchronize_EmptyRedirectTopic(t *testing.T) {
 
 func TestKafkaStateCoordinator_Synchronize_AlreadyCaughtUp(t *testing.T) {
 	mockAdmin := &AdminMock{
-		DescribeTopicsFunc: func(ctx context.Context, topics []string) ([]TopicMetadata, error) {
+		DescribeTopicsFunc: func(_ context.Context, _ []string) ([]TopicMetadata, error) {
 			return []TopicMetadata{
 				&mockTopicMetadata{
 					name:       "redirect_orders",
@@ -81,7 +84,7 @@ func TestKafkaStateCoordinator_Synchronize_AlreadyCaughtUp(t *testing.T) {
 	)
 
 	coordinator.mu.Lock()
-	coordinator.topic = "orders"
+	coordinator.topic = testTopicOrders
 	// Simulate that we have already consumed up to offset 9 (HWM 10 means next is 10, so 9 is the last one)
 	coordinator.consumedOffsets[0] = 9
 	coordinator.mu.Unlock()
@@ -92,7 +95,7 @@ func TestKafkaStateCoordinator_Synchronize_AlreadyCaughtUp(t *testing.T) {
 
 func TestKafkaStateCoordinator_Synchronize_BlocksUntilCaughtUp(t *testing.T) {
 	mockAdmin := &AdminMock{
-		DescribeTopicsFunc: func(ctx context.Context, topics []string) ([]TopicMetadata, error) {
+		DescribeTopicsFunc: func(_ context.Context, _ []string) ([]TopicMetadata, error) {
 			return []TopicMetadata{
 				&mockTopicMetadata{
 					name:       "redirect_orders",
@@ -113,7 +116,7 @@ func TestKafkaStateCoordinator_Synchronize_BlocksUntilCaughtUp(t *testing.T) {
 	)
 
 	coordinator.mu.Lock()
-	coordinator.topic = "orders"
+	coordinator.topic = testTopicOrders
 	coordinator.consumedOffsets[0] = 5 // Lagging behind (5 < 9)
 	coordinator.mu.Unlock()
 
@@ -140,7 +143,7 @@ func TestKafkaStateCoordinator_Synchronize_BlocksUntilCaughtUp(t *testing.T) {
 	// Now it should complete
 	select {
 	case err := <-done:
-		assert.NoError(t, err)
+		require.NoError(t, err)
 	case <-time.After(1 * time.Second):
 		t.Fatal("Synchronize failed to return after catching up")
 	}
@@ -148,7 +151,7 @@ func TestKafkaStateCoordinator_Synchronize_BlocksUntilCaughtUp(t *testing.T) {
 
 func TestKafkaStateCoordinator_Synchronize_ContextCancellation(t *testing.T) {
 	mockAdmin := &AdminMock{
-		DescribeTopicsFunc: func(ctx context.Context, topics []string) ([]TopicMetadata, error) {
+		DescribeTopicsFunc: func(_ context.Context, _ []string) ([]TopicMetadata, error) {
 			return []TopicMetadata{
 				&mockTopicMetadata{
 					name:       "redirect_orders",
@@ -169,7 +172,7 @@ func TestKafkaStateCoordinator_Synchronize_ContextCancellation(t *testing.T) {
 	)
 
 	coordinator.mu.Lock()
-	coordinator.topic = "orders"
+	coordinator.topic = testTopicOrders
 	coordinator.consumedOffsets[0] = 5 // Lagging
 	coordinator.mu.Unlock()
 

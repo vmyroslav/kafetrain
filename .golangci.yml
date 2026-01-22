@@ -84,6 +84,18 @@ linters:
           - gosec
           - govet
         path: _test\.go
+      - linters:
+          - cyclop
+        text: "cyclomatic complexity.*for function Synchronize"
+      - linters:
+          - govet
+        text: "fieldalignment: struct.*could be"
+      - linters:
+          - wrapcheck
+        text: "error returned from interface method should be wrapped"
+      - linters:
+          - wrapcheck
+        text: "error returned from external package is unwrapped"
     paths:
       - mock_.+\.go
       - third_party$

@@ -7,11 +7,12 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 type mockBackoff struct{}
 
-func (m *mockBackoff) NextDelay(attempt int) time.Duration {
+func (m *mockBackoff) NextDelay(_ int) time.Duration {
 	return time.Millisecond
 }
 
@@ -19,25 +20,25 @@ func TestErrorTracker_Redirect_Rollback(t *testing.T) {
 	// 1. Setup
 	// Producer fails on Produce (simulating write failure to Retry Topic)
 	mockProducer := &ProducerMock{
-		ProduceFunc: func(ctx context.Context, topic string, msg Message) error {
+		ProduceFunc: func(_ context.Context, _ string, _ Message) error {
 			return errors.New("kafka produce error")
 		},
 	}
 
 	// Coordinator mocks: Acquire succeeds, Release MUST be called
 	mockCoordinator := &StateCoordinatorMock{
-		AcquireFunc: func(ctx context.Context, msg *InternalMessage, originalTopic string) error {
+		AcquireFunc: func(_ context.Context, _ *InternalMessage, _ string) error {
 			return nil
 		},
-		ReleaseFunc: func(ctx context.Context, msg *InternalMessage) error {
+		ReleaseFunc: func(_ context.Context, _ *InternalMessage) error {
 			return nil
 		},
 	}
 
 	logger := &LoggerMock{
-		DebugFunc: func(msg string, fields ...interface{}) {},
-		InfoFunc:  func(msg string, fields ...interface{}) {},
-		ErrorFunc: func(msg string, fields ...interface{}) {},
+		DebugFunc: func(_ string, _ ...interface{}) {},
+		InfoFunc:  func(_ string, _ ...interface{}) {},
+		ErrorFunc: func(_ string, _ ...interface{}) {},
 	}
 
 	cfg := &Config{
@@ -55,7 +56,7 @@ func TestErrorTracker_Redirect_Rollback(t *testing.T) {
 		mockCoordinator,
 		&mockBackoff{},
 	)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	msg := &InternalMessage{
 		topic:   "orders",
@@ -66,7 +67,7 @@ func TestErrorTracker_Redirect_Rollback(t *testing.T) {
 	err = tracker.Redirect(context.Background(), msg, errors.New("business error"))
 
 	// 3. Verify Result
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kafka produce error")
 
 	// 4. Verify Rollback (Release called)
@@ -76,13 +77,13 @@ func TestErrorTracker_Redirect_Rollback(t *testing.T) {
 
 func TestErrorTracker_Redirect_HappyPath(t *testing.T) {
 	mockProducer := &ProducerMock{
-		ProduceFunc: func(ctx context.Context, topic string, msg Message) error {
+		ProduceFunc: func(_ context.Context, _ string, _ Message) error {
 			return nil
 		},
 	}
 
 	mockCoordinator := &StateCoordinatorMock{
-		AcquireFunc: func(ctx context.Context, msg *InternalMessage, originalTopic string) error {
+		AcquireFunc: func(_ context.Context, _ *InternalMessage, _ string) error {
 			return nil
 		},
 	}
@@ -90,7 +91,7 @@ func TestErrorTracker_Redirect_HappyPath(t *testing.T) {
 	tracker, err := NewErrorTracker(
 		&Config{GroupID: "test-group", MaxRetries: 5, RetryTopicPrefix: "retry"},
 		&LoggerMock{
-			DebugFunc: func(s string, i ...interface{}) {},
+			DebugFunc: func(_ string, _ ...interface{}) {},
 		},
 		mockProducer,
 		&ConsumerFactoryMock{},
@@ -98,7 +99,7 @@ func TestErrorTracker_Redirect_HappyPath(t *testing.T) {
 		mockCoordinator,
 		&mockBackoff{},
 	)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	msg := &InternalMessage{
 		topic:   "orders",
@@ -106,7 +107,7 @@ func TestErrorTracker_Redirect_HappyPath(t *testing.T) {
 	}
 
 	err = tracker.Redirect(context.Background(), msg, errors.New("fail"))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	assert.Len(t, mockCoordinator.AcquireCalls(), 1)
 	assert.Len(t, mockProducer.ProduceCalls(), 1)

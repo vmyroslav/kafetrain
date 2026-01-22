@@ -29,7 +29,7 @@ func TestHeaderList(t *testing.T) {
 			var hl HeaderList
 
 			err := SetHeader[string](&hl, tt.key, tt.val)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 
 			value, ok := GetHeaderValue[string](&hl, tt.key)
 			if !ok || value != tt.val {
@@ -62,11 +62,11 @@ func TestHeaderGet(t *testing.T) {
 	var hl HeaderList
 
 	err := SetHeader[string](&hl, "key1", "value-1")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	err = SetHeader[int](&hl, "key2", 42)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	err = SetHeader[time.Time](&hl, "key3", time.Unix(1234567890, 0))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	val1, ok := GetHeaderValue[string](&hl, "key1")
 	assert.True(t, ok, "string value should be found")
@@ -88,13 +88,13 @@ func TestSetHeader_UnsupportedType(t *testing.T) {
 
 	// Test with unsupported type (float64)
 	err := SetHeader[float64](&hl, "key", 3.14)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported type")
 	assert.Contains(t, err.Error(), "float64")
 
 	// Test with unsupported type (bool)
 	err = SetHeader[bool](&hl, "key", true)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported type")
 	assert.Contains(t, err.Error(), "bool")
 

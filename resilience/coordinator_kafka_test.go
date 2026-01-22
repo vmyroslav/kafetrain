@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // Helper to create mock messages
@@ -43,7 +44,7 @@ func (m *mockTopicMetadata) PartitionOffsets() map[int32]int64 { return m.offset
 func TestKafkaStateCoordinator_Acquire(t *testing.T) {
 	// Setup Mocks
 	mockProducer := &ProducerMock{
-		ProduceFunc: func(ctx context.Context, topic string, msg Message) error {
+		ProduceFunc: func(_ context.Context, _ string, _ Message) error {
 			return nil
 		},
 	}
@@ -51,8 +52,8 @@ func TestKafkaStateCoordinator_Acquire(t *testing.T) {
 	mockAdmin := &AdminMock{}
 	mockFactory := &ConsumerFactoryMock{}
 	mockLogger := &LoggerMock{
-		DebugFunc: func(msg string, fields ...interface{}) {},
-		ErrorFunc: func(msg string, fields ...interface{}) {},
+		DebugFunc: func(_ string, _ ...interface{}) {},
+		ErrorFunc: func(_ string, _ ...interface{}) {},
 	}
 
 	cfg := &Config{
@@ -77,7 +78,7 @@ func TestKafkaStateCoordinator_Acquire(t *testing.T) {
 
 	// Test Acquire
 	err := coordinator.Acquire(ctx, msg, "orders")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Optimistic Locking: Should be locked immediately
 	assert.True(t, coordinator.IsLocked(ctx, msg))
@@ -103,12 +104,12 @@ func TestKafkaStateCoordinator_Acquire(t *testing.T) {
 
 func TestKafkaStateCoordinator_Release(t *testing.T) {
 	mockProducer := &ProducerMock{
-		ProduceFunc: func(ctx context.Context, topic string, msg Message) error {
+		ProduceFunc: func(_ context.Context, _ string, _ Message) error {
 			return nil
 		},
 	}
 	mockLogger := &LoggerMock{
-		DebugFunc: func(msg string, fields ...interface{}) {},
+		DebugFunc: func(_ string, _ ...interface{}) {},
 	}
 
 	cfg := &Config{
@@ -136,7 +137,7 @@ func TestKafkaStateCoordinator_Release(t *testing.T) {
 
 	// Test Release
 	err := coordinator.Release(ctx, msg)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Optimistic Release: Should be unlocked immediately
 	assert.False(t, coordinator.IsLocked(ctx, msg))
@@ -153,7 +154,7 @@ func TestKafkaStateCoordinator_Release(t *testing.T) {
 
 func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 	mockAdmin := &AdminMock{
-		DescribeTopicsFunc: func(ctx context.Context, topics []string) ([]TopicMetadata, error) {
+		DescribeTopicsFunc: func(_ context.Context, _ []string) ([]TopicMetadata, error) {
 			return []TopicMetadata{
 				&mockTopicMetadata{
 					name:       "redirect_orders",
@@ -162,17 +163,17 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 				},
 			}, nil
 		},
-		CreateTopicFunc: func(ctx context.Context, name string, partitions int32, replicationFactor int16, config map[string]string) error {
+		CreateTopicFunc: func(_ context.Context, _ string, _ int32, _ int16, _ map[string]string) error {
 			return nil
 		},
-		DeleteConsumerGroupFunc: func(ctx context.Context, groupID string) error {
+		DeleteConsumerGroupFunc: func(_ context.Context, _ string) error {
 			return nil
 		},
 	}
 
 	// Mock Consumer for Restoration
 	restoreConsumer := &ConsumerMock{
-		ConsumeFunc: func(ctx context.Context, topics []string, handler ConsumerHandler) error {
+		ConsumeFunc: func(ctx context.Context, _ []string, handler ConsumerHandler) error {
 			// Simulate reading a lock message from redirect topic
 			// NO CoordinatorID header -> simulates legacy message or other instance
 			msg := &InternalMessage{
@@ -185,7 +186,7 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 
 			msg.SetPartition(0)
 			msg.SetOffset(9) // Last offset (target is 10)
-			handler.Handle(ctx, msg)
+			_ = handler.Handle(ctx, msg)
 
 			return nil
 		},
@@ -193,7 +194,7 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 	}
 
 	liveConsumer := &ConsumerMock{
-		ConsumeFunc: func(ctx context.Context, topics []string, handler ConsumerHandler) error {
+		ConsumeFunc: func(ctx context.Context, _ []string, _ ConsumerHandler) error {
 			<-ctx.Done()
 			return nil
 		},
@@ -202,7 +203,7 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 
 	mockFactory := &ConsumerFactoryMock{}
 	callCount := 0
-	mockFactory.NewConsumerFunc = func(groupID string) (Consumer, error) {
+	mockFactory.NewConsumerFunc = func(_ string) (Consumer, error) {
 		callCount++
 		if callCount == 1 {
 			return restoreConsumer, nil
@@ -218,7 +219,7 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 
 	coordinator := NewKafkaStateCoordinator(
 		cfg,
-		&LoggerMock{DebugFunc: func(s string, i ...interface{}) {}, InfoFunc: func(s string, i ...interface{}) {}},
+		&LoggerMock{DebugFunc: func(_ string, _ ...interface{}) {}, InfoFunc: func(_ string, _ ...interface{}) {}},
 		&ProducerMock{},
 		mockFactory,
 		mockAdmin,
@@ -227,7 +228,7 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 
 	// Test Start
 	err := coordinator.Start(context.Background(), "orders")
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify State was restored
 	msg := &InternalMessage{
@@ -239,7 +240,7 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 
 func TestKafkaStateCoordinator_Acquire_ProducerError(t *testing.T) {
 	mockProducer := &ProducerMock{
-		ProduceFunc: func(ctx context.Context, topic string, msg Message) error {
+		ProduceFunc: func(_ context.Context, _ string, _ Message) error {
 			return errors.New("kafka error")
 		},
 	}
@@ -247,7 +248,7 @@ func TestKafkaStateCoordinator_Acquire_ProducerError(t *testing.T) {
 	coordinator := NewKafkaStateCoordinator(
 		&Config{RedirectTopicPrefix: "redirect"},
 		&LoggerMock{
-			WarnFunc: func(msg string, fields ...interface{}) {},
+			WarnFunc: func(_ string, _ ...interface{}) {},
 		},
 		mockProducer,
 		&ConsumerFactoryMock{},
@@ -256,7 +257,7 @@ func TestKafkaStateCoordinator_Acquire_ProducerError(t *testing.T) {
 	)
 
 	err := coordinator.Acquire(context.Background(), &InternalMessage{topic: "t", KeyData: []byte("k")}, "t")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kafka error")
 
 	// Verify Rollback: Should NOT be locked
@@ -289,7 +290,7 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 
 	// Process the echo message
 	err := coordinator.processRedirectMessage(context.Background(), echoMsg)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Ref count should still be 1 (Not incremented to 2)
 	count, _ := coordinator.local.lm.getRefCount("orders", "k1")
@@ -306,7 +307,7 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 	foreignMsg.HeaderData.Set("key", []byte("k1"))
 
 	err = coordinator.processRedirectMessage(context.Background(), foreignMsg)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Ref count should now be 2
 	count, _ = coordinator.local.lm.getRefCount("orders", "k1")
@@ -332,7 +333,7 @@ func TestKafkaStateCoordinator_ForeignTombstone(t *testing.T) {
 	tombstone := createMockRedirectMsg("orders", "key1", "other-instance", false)
 
 	err := coordinator.processRedirectMessage(context.Background(), tombstone)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Should be unlocked
 	assert.False(t, coordinator.IsLocked(context.Background(), msg))
@@ -344,11 +345,11 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 	// 2. Instance A crashes (or rebalance happens).
 	// 3. Instance B starts up, assigned the same partition.
 	// 4. Instance B consumes the Redirect Topic and must restore the lock locally.
-	topic := "orders"
+	topic := testTopicOrders
 	key := "order-1"
 
 	mockAdmin := &AdminMock{
-		DescribeTopicsFunc: func(ctx context.Context, topics []string) ([]TopicMetadata, error) {
+		DescribeTopicsFunc: func(_ context.Context, _ []string) ([]TopicMetadata, error) {
 			return []TopicMetadata{
 				&mockTopicMetadata{
 					name:       "redirect_orders",
@@ -357,17 +358,17 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 				},
 			}, nil
 		},
-		CreateTopicFunc: func(ctx context.Context, name string, partitions int32, replicationFactor int16, config map[string]string) error {
+		CreateTopicFunc: func(_ context.Context, _ string, _ int32, _ int16, _ map[string]string) error {
 			return nil
 		},
-		DeleteConsumerGroupFunc: func(ctx context.Context, groupID string) error {
+		DeleteConsumerGroupFunc: func(_ context.Context, _ string) error {
 			return nil
 		},
 	}
 
 	// this consumer will be used by restoreState
 	restoreConsumer := &ConsumerMock{
-		ConsumeFunc: func(ctx context.Context, topics []string, handler ConsumerHandler) error {
+		ConsumeFunc: func(ctx context.Context, _ []string, handler ConsumerHandler) error {
 			// Simulate the existing lock message on the topic
 			msg := &InternalMessage{
 				topic:   "redirect_orders",
@@ -393,7 +394,7 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 
 	// Live consumer (post-restore)
 	liveConsumer := &ConsumerMock{
-		ConsumeFunc: func(ctx context.Context, topics []string, handler ConsumerHandler) error {
+		ConsumeFunc: func(ctx context.Context, _ []string, _ ConsumerHandler) error {
 			<-ctx.Done()
 			return nil
 		},
@@ -401,14 +402,14 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 	}
 
 	mockFactory := &ConsumerFactoryMock{
-		NewConsumerFunc: func(groupID string) (Consumer, error) {
+		NewConsumerFunc: func(_ string) (Consumer, error) {
 			// First call is for restore
 			return restoreConsumer, nil
 		},
 	}
 	// We need to patch the factory for the second call (live consumer) inside the test flow or use a counter
 	callCount := 0
-	mockFactory.NewConsumerFunc = func(groupID string) (Consumer, error) {
+	mockFactory.NewConsumerFunc = func(_ string) (Consumer, error) {
 		callCount++
 		if callCount == 1 {
 			return restoreConsumer, nil
@@ -419,7 +420,7 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 
 	coordinator := NewKafkaStateCoordinator(
 		&Config{RedirectTopicPrefix: "redirect", StateRestoreTimeoutMs: 100},
-		&LoggerMock{DebugFunc: func(s string, i ...interface{}) {}, InfoFunc: func(s string, i ...interface{}) {}},
+		&LoggerMock{DebugFunc: func(_ string, _ ...interface{}) {}, InfoFunc: func(_ string, _ ...interface{}) {}},
 		&ProducerMock{},
 		mockFactory,
 		mockAdmin,
@@ -428,7 +429,7 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 
 	// Start Instance B
 	err := coordinator.Start(context.Background(), topic)
-	assert.NoError(t, err)
+	require.NoError(t, err)
 
 	// Verify Instance B has the lock
 	checkMsg := &InternalMessage{topic: topic, KeyData: []byte(key)}

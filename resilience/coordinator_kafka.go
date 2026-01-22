@@ -81,9 +81,11 @@ func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 
 func (k *KafkaStateCoordinator) Close() error {
 	k.mu.Lock()
+
 	if k.cancel != nil {
 		k.cancel()
 	}
+
 	k.mu.Unlock()
 
 	k.wg.Wait()
@@ -370,7 +372,7 @@ func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) 
 	}
 
 	err = refillConsumer.Consume(refillCtx, []string{k.redirectTopic(topic)}, handler)
-	refillConsumer.Close()
+	_ = refillConsumer.Close()
 
 	if err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("restore failed: %w", err)
@@ -390,9 +392,10 @@ func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic
 
 	// TODO: propagate errors back to the tracker
 	k.wg.Add(1)
+
 	go func() {
 		defer k.wg.Done()
-		defer consumer.Close()
+		defer func() { _ = consumer.Close() }()
 
 		backoff := 5 * time.Second
 

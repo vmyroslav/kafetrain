@@ -41,21 +41,27 @@ func NewErrorTracker(
 	if cfg == nil {
 		return nil, errors.New("config cannot be nil")
 	}
+
 	if cfg.GroupID == "" {
 		return nil, errors.New("config.GroupID is required")
 	}
+
 	if logger == nil {
 		return nil, errors.New("logger cannot be nil")
 	}
+
 	if producer == nil {
 		return nil, errors.New("producer cannot be nil")
 	}
+
 	if consumerFactory == nil {
 		return nil, errors.New("consumerFactory cannot be nil")
 	}
+
 	if admin == nil {
 		return nil, errors.New("admin cannot be nil")
 	}
+
 	if coordinator == nil {
 		return nil, errors.New("coordinator cannot be nil")
 	}
@@ -84,10 +90,12 @@ func NewErrorTracker(
 // 2. It starts the data plane (StartRetryWorker) to process retry messages.
 func (t *ErrorTracker) Start(ctx context.Context, topic string, handler ConsumerHandler) error {
 	t.mu.Lock()
+
 	if _, started := t.startedTopics[topic]; started {
 		t.mu.Unlock()
 		return nil
 	}
+
 	t.startedTopics[topic] = struct{}{}
 
 	// Create a cancellable context for this topic's workers, derived from the input context
@@ -103,17 +111,20 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string, handler Consumer
 		delete(t.startedTopics, topic)
 		delete(t.cancels, topic)
 		t.mu.Unlock()
+
 		return err
 	}
 
 	// background workers use the same derived context
 	t.wg.Add(1)
+
 	return t.StartRetryWorker(workerCtx, topic, handler)
 }
 
 // Close stops all background workers and releases resources.
 func (t *ErrorTracker) Close() error {
 	t.mu.Lock()
+
 	for _, cancel := range t.cancels {
 		cancel()
 	}
@@ -224,7 +235,7 @@ func (t *ErrorTracker) StartRetryWorker(ctx context.Context, topic string, handl
 
 	go func() {
 		defer t.wg.Done()
-		defer retryConsumer.Close()
+		defer func() { _ = retryConsumer.Close() }()
 
 		backoff := 5 * time.Second
 
@@ -636,8 +647,8 @@ type RetriableError struct {
 	Retry  bool
 }
 
-func NewRetriableError(origin error, retry bool) *RetriableError {
-	return &RetriableError{Origin: origin, Retry: retry}
+func NewRetriableError(origin error, shouldRetry bool) *RetriableError {
+	return &RetriableError{Origin: origin, Retry: shouldRetry}
 }
 
 func (e RetriableError) Error() string {

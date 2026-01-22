@@ -144,14 +144,3 @@ func (lm lockMap) removeTopic(topic string) {
 func (lm lockMap) isTopicEmpty(topic string) bool {
 	return len(lm[topic]) == 0
 }
-
-// hasKey returns true if the topic/key pair exists (regardless of count value).
-func (lm lockMap) hasKey(topic, key string) bool {
-	if lm[topic] == nil {
-		return false
-	}
-
-	_, ok := lm[topic][key]
-
-	return ok
-}

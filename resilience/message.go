@@ -34,9 +34,12 @@ const (
 	HeaderCoordinatorID = "x-coordinator-id"
 	// HeaderTopic stores the original topic name
 	HeaderTopic = "topic"
-	HeaderID    = "id"
+	// HeaderID stores the message ID
+	HeaderID = "id"
+	// HeaderRetry stores the retry flag
 	HeaderRetry = "retry"
-	HeaderKey   = "key"
+	// HeaderKey stores the message key
+	HeaderKey = "key"
 )
 
 // Message represents a Kafka message
@@ -241,6 +244,7 @@ func GetHeaderValue[T any](h *HeaderList, key string) (T, bool) {
 	}
 
 	valStr := string(val)
+
 	var anyVal any = zero
 	switch anyVal.(type) {
 	case string:
