@@ -41,11 +41,9 @@ func TestProducerFailure_Rollback(t *testing.T) {
 	// mockBackoff to avoid waiting
 	backoff := &mockBackoff{}
 
-	cfg := &Config{
-		GroupID:          "test-group",
-		MaxRetries:       5,
-		RetryTopicPrefix: "retry",
-	}
+	cfg := NewDefaultConfig()
+	cfg.GroupID = testGroupID
+	cfg.MaxRetries = 5
 
 	tracker, err := NewErrorTracker(
 		cfg,

@@ -49,8 +49,8 @@ func NewErrorTracker(
 		return nil, errors.New("config cannot be nil")
 	}
 
-	if cfg.GroupID == "" {
-		return nil, errors.New("config.GroupID is required")
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
 
 	if logger == nil {
@@ -201,7 +201,7 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 
 	// create retry topic
 	g.Go(func() error {
-		if err := t.admin.CreateTopic(ctx, t.RetryTopic(topic), partitions, 1, map[string]string{
+		if err := t.admin.CreateTopic(ctx, t.RetryTopic(topic), partitions, t.cfg.ReplicationFactor, map[string]string{
 			"cleanup.policy": "delete",
 			"retention.ms":   "3600000", // 1 hour
 		}); err != nil {
@@ -213,7 +213,7 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 
 	// create DLQ topic
 	g.Go(func() error {
-		if err := t.admin.CreateTopic(ctx, t.DLQTopic(topic), partitions, 1, map[string]string{
+		if err := t.admin.CreateTopic(ctx, t.DLQTopic(topic), partitions, t.cfg.ReplicationFactor, map[string]string{
 			"cleanup.policy": "delete",
 			"retention.ms":   "-1", // infinite
 		}); err != nil {
@@ -344,9 +344,9 @@ func (t *ErrorTracker) Synchronize(ctx context.Context) error {
 // This is used to enforce strict ordering: new messages with locked keys must
 // wait until the predecessor completes. This is a fast, local lock check with
 // no network I/O.
-func (t *ErrorTracker) IsInRetryChain(msg Message) bool {
+func (t *ErrorTracker) IsInRetryChain(ctx context.Context, msg Message) bool {
 	internalMsg := NewFromMessage(msg)
-	return t.coordinator.IsLocked(context.Background(), internalMsg)
+	return t.coordinator.IsLocked(ctx, internalMsg)
 }
 
 // NewResilientHandler wraps a user handler with automatic resilience for MAIN topic consumption.
@@ -362,7 +362,7 @@ func (t *ErrorTracker) NewResilientHandler(handler ConsumerHandler) ConsumerHand
 		// 1. Strict Ordering Check
 		// If this key is currently retrying (from a previous message), we must
 		// redirect this new message to the retry queue to maintain order.
-		if t.IsInRetryChain(msg) {
+		if t.IsInRetryChain(ctx, msg) {
 			return t.Redirect(ctx, msg, errors.New("strict ordering: predecessor in retry"))
 		}
 

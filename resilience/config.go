@@ -1,5 +1,11 @@
 package resilience
 
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
 // Config holds configuration for the retry mechanism.
 type Config struct {
 	// RetryTopicPrefix is the prefix for retry topics where failed messages are sent for reprocessing.
@@ -44,6 +50,11 @@ type Config struct {
 	// Default: 0
 	RetryTopicPartitions int32
 
+	// ReplicationFactor specifies the replication factor for auto-created topics (retry, redirect, DLQ).
+	// For production environments, this should typically be set to 3.
+	// Default: 1
+	ReplicationFactor int16
+
 	// FreeOnDLQ determines whether to release locks (send tombstones) when a message is sent to DLQ.
 	// If false, locks remain until manually cleared, preserving ordering guarantees.
 	// Default: false
@@ -63,10 +74,86 @@ func NewDefaultConfig() *Config {
 		RetryTopicPrefix:          "retry",
 		MaxRetries:                5,
 		RetryTopicPartitions:      0,
+		ReplicationFactor:         1,
 		InitialOffset:             -2, // OffsetOldest
 		FreeOnDLQ:                 false,
 		StateRestoreTimeoutMs:     30000, // 30 seconds
 		StateRestoreIdleTimeoutMs: 5000,  // 5 seconds
 		DisableAutoTopicCreation:  false,
 	}
+}
+
+// Validate checks the configuration for errors and returns an error if any field is invalid.
+func (c *Config) Validate() error {
+	var errs []string
+
+	errs = c.validateRequiredFields(errs)
+	errs = c.validateNumericFields(errs)
+	errs = c.validatePrefixCollisions(errs)
+
+	if len(errs) > 0 {
+		return errors.New("config validation failed: " + strings.Join(errs, "; "))
+	}
+
+	return nil
+}
+
+func (c *Config) validateRequiredFields(errs []string) []string {
+	if c.GroupID == "" {
+		errs = append(errs, "GroupID is required")
+	}
+
+	if c.RetryTopicPrefix == "" {
+		errs = append(errs, "RetryTopicPrefix cannot be empty")
+	}
+
+	if c.RedirectTopicPrefix == "" {
+		errs = append(errs, "RedirectTopicPrefix cannot be empty")
+	}
+
+	if c.DLQTopicPrefix == "" {
+		errs = append(errs, "DLQTopicPrefix cannot be empty")
+	}
+
+	return errs
+}
+
+func (c *Config) validateNumericFields(errs []string) []string {
+	if c.MaxRetries < 0 {
+		errs = append(errs, fmt.Sprintf("MaxRetries must be >= 0, got %d", c.MaxRetries))
+	}
+
+	if c.ReplicationFactor < 1 {
+		errs = append(errs, fmt.Sprintf("ReplicationFactor must be >= 1, got %d", c.ReplicationFactor))
+	}
+
+	if c.RetryTopicPartitions < 0 {
+		errs = append(errs, fmt.Sprintf("RetryTopicPartitions must be >= 0, got %d", c.RetryTopicPartitions))
+	}
+
+	if c.StateRestoreTimeoutMs < 0 {
+		errs = append(errs, fmt.Sprintf("StateRestoreTimeoutMs must be >= 0, got %d", c.StateRestoreTimeoutMs))
+	}
+
+	if c.StateRestoreIdleTimeoutMs < 0 {
+		errs = append(errs, fmt.Sprintf("StateRestoreIdleTimeoutMs must be >= 0, got %d", c.StateRestoreIdleTimeoutMs))
+	}
+
+	return errs
+}
+
+func (c *Config) validatePrefixCollisions(errs []string) []string {
+	if c.RetryTopicPrefix == c.RedirectTopicPrefix {
+		errs = append(errs, "RetryTopicPrefix and RedirectTopicPrefix must be different")
+	}
+
+	if c.RetryTopicPrefix == c.DLQTopicPrefix {
+		errs = append(errs, "RetryTopicPrefix and DLQTopicPrefix must be different")
+	}
+
+	if c.RedirectTopicPrefix == c.DLQTopicPrefix {
+		errs = append(errs, "RedirectTopicPrefix and DLQTopicPrefix must be different")
+	}
+
+	return errs
 }

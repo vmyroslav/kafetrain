@@ -430,7 +430,7 @@ func (h *adapterTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 			}
 		} else {
 			// Success - free from retry chain if it was in retry
-			if h.tracker.IsInRetryChain(retryMsg) {
+			if h.tracker.IsInRetryChain(session.Context(), retryMsg) {
 				if freeErr := h.tracker.Free(session.Context(), retryMsg); freeErr != nil {
 					h.logger.Error("failed to free message", "error", freeErr)
 					return freeErr
@@ -739,7 +739,7 @@ func (h *chainRetryHandler) ConsumeClaim(session sarama.ConsumerGroupSession, cl
 			)
 		} else {
 			// Success on 3rd attempt
-			if h.tracker.IsInRetryChain(retryMsg) {
+			if h.tracker.IsInRetryChain(session.Context(), retryMsg) {
 				if freeErr := h.tracker.Free(session.Context(), retryMsg); freeErr != nil {
 					h.logger.Error("failed to free message", "error", freeErr)
 					return freeErr

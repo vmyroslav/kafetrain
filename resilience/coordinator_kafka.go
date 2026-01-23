@@ -383,7 +383,7 @@ func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic s
 
 	// segment.ms=100 ensures fast compaction for lock state visibility.
 	// Lower values = faster tombstone propagation, higher CPU usage.
-	return k.admin.CreateTopic(ctx, redirectTopic, partitions, 1, map[string]string{
+	return k.admin.CreateTopic(ctx, redirectTopic, partitions, k.cfg.ReplicationFactor, map[string]string{
 		"cleanup.policy": "compact",
 		"segment.ms":     "100",
 	})

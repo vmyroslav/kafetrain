@@ -16,6 +16,14 @@ func (m *mockBackoff) NextDelay(_ int) time.Duration {
 	return time.Millisecond
 }
 
+// newTestConfig creates a valid config for tests
+func newTestConfig() *Config {
+	cfg := NewDefaultConfig()
+	cfg.GroupID = testGroupID
+
+	return cfg
+}
+
 func TestErrorTracker_Redirect_Rollback(t *testing.T) {
 	// 1. Setup
 	// Producer fails on Produce (simulating write failure to Retry Topic)
@@ -41,11 +49,8 @@ func TestErrorTracker_Redirect_Rollback(t *testing.T) {
 		ErrorFunc: func(_ string, _ ...interface{}) {},
 	}
 
-	cfg := &Config{
-		GroupID:          "test-group",
-		MaxRetries:       5,
-		RetryTopicPrefix: "retry",
-	}
+	cfg := newTestConfig()
+	cfg.MaxRetries = 5
 
 	tracker, err := NewErrorTracker(
 		cfg,
@@ -88,8 +93,11 @@ func TestErrorTracker_Redirect_HappyPath(t *testing.T) {
 		},
 	}
 
+	cfg := newTestConfig()
+	cfg.MaxRetries = 5
+
 	tracker, err := NewErrorTracker(
-		&Config{GroupID: "test-group", MaxRetries: 5, RetryTopicPrefix: "retry"},
+		cfg,
 		&LoggerMock{
 			DebugFunc: func(_ string, _ ...interface{}) {},
 		},

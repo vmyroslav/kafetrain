@@ -116,6 +116,7 @@ Messages in the Retry Topic are only processed when their scheduled `next-retry-
 | `DLQTopicPrefix` | `"dlq"` | Prefix for the Dead Letter Queue topic. |
 | `MaxRetries` | `5` | Maximum number of retry attempts. |
 | `RetryTopicPartitions` | `0` (auto) | Number of partitions for auxiliary topics. 0 means match original topic. |
+| `ReplicationFactor` | `1` | Replication factor for auto-created topics. For production, set to `3`. |
 | `FreeOnDLQ` | `false` | If true, releases the key lock when a message hits DLQ. If false, the key stays "stuck" (manual intervention required) to preserve absolute order. |
 | `DisableAutoTopicCreation`| `false` | Set to `true` if your Kafka environment doesn't allow automatic topic creation. |
 | `StateRestoreTimeoutMs` | `30000` | Max time to wait for state sync on startup. |
