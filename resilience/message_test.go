@@ -86,18 +86,17 @@ func TestSetHeader_UnsupportedType(t *testing.T) {
 
 	var hl HeaderList
 
-	// Test with unsupported type (float64)
+	// unsupported type (float64)
 	err := SetHeader[float64](&hl, "key", 3.14)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported type")
 	assert.Contains(t, err.Error(), "float64")
 
-	// Test with unsupported type (bool)
+	// unsupported type (bool)
 	err = SetHeader[bool](&hl, "key", true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported type")
 	assert.Contains(t, err.Error(), "bool")
 
-	// Verify no headers were added
 	assert.Empty(t, hl.list)
 }

@@ -14,28 +14,28 @@ import (
 )
 
 // ErrorTracker is the main entry point for the resilience library.
-// It orchestrates the complete 3-topic retry pattern: retry topic for messages,
+// It orchestrates the complete retry pattern: retry topic for messages,
 // redirect topic for distributed locking, and DLQ for unrecoverable failures.
-// This implementation is library-agnostic, working with any Kafka client through
-// the Producer/Consumer/Admin interfaces.
 type ErrorTracker struct {
+	cfg *Config
+
 	coordinator     StateCoordinator
 	backoff         BackoffStrategy
 	logger          Logger
 	producer        Producer
 	consumerFactory ConsumerFactory
 	admin           Admin
-	cfg             *Config
-	mu              sync.RWMutex
-	startedTopics   map[string]struct{}
-	cancels         map[string]context.CancelFunc
-	wg              sync.WaitGroup
+
+	startedTopics map[string]struct{}
+
+	mu      sync.RWMutex
+	wg      sync.WaitGroup
+	cancels map[string]context.CancelFunc
 }
 
 // NewErrorTracker creates a new ErrorTracker with the provided dependencies.
-// All parameters except backoff are required. If backoff is nil, it defaults
-// to ExponentialBackoff. Returns an error if any required parameter is missing
-// or if the configuration is invalid (e.g., missing GroupID).
+// All parameters except backoff are required.
+// Returns an error if any required parameter is missing or if the configuration is invalid.
 func NewErrorTracker(
 	cfg *Config,
 	logger Logger,
@@ -74,7 +74,7 @@ func NewErrorTracker(
 	}
 
 	if backoff == nil {
-		backoff = NewExponentialBackoff()
+		return nil, errors.New("backoff strategy cannot be nil")
 	}
 
 	t := ErrorTracker{
@@ -94,8 +94,9 @@ func NewErrorTracker(
 
 // Start initializes the complete resilience infrastructure for a topic.
 // This method sets up both the control plane and data plane:
-//  1. Control plane: Starts the coordinator to manage distributed ordering locks
-//  2. Data plane: Starts the retry worker to process messages from the retry topic
+//
+//	Control plane: Starts the coordinator to manage distributed ordering locks
+//	Data plane: Starts the retry worker to process messages from the retry topic
 //
 // This is a blocking call during coordinator startup (state restoration), then launches
 // a background retry worker. Idempotent: calling Start multiple times for the same
@@ -110,13 +111,13 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string, handler Consumer
 
 	t.startedTopics[topic] = struct{}{}
 
-	// Create a cancellable context for this topic's workers, derived from the input context
+	// create a cancellable context for this topic's workers
 	workerCtx, cancel := context.WithCancel(ctx)
 	t.cancels[topic] = cancel
 	t.mu.Unlock()
 
-	// Use derived context for both setup and background workers
-	// If setup fails, we cancel the context to clean up any partial state
+	// se derived context for setup and background workers
+	// if setup fails, we cancel the context to clean up any partial state
 	if err := t.coordinator.Start(workerCtx, topic); err != nil {
 		cancel()
 		t.mu.Lock()

@@ -51,11 +51,7 @@ func main() {
 	resilienceCfg.RetryTopicPartitions = 1 // simplified for example
 
 	// NewResilienceTracker automatically wires up all default adapters and the coordinator
-	tracker, err := saramaadapter.NewResilienceTracker(
-		client,
-		resilienceCfg,
-		saramaadapter.WithLogger(slog.Default()),
-	)
+	tracker, err := saramaadapter.NewResilienceTracker(resilienceCfg, client, saramaadapter.WithLogger(slog.Default()))
 	if err != nil {
 		slog.Error("failed to create resilience manager", "error", err)
 		os.Exit(1)

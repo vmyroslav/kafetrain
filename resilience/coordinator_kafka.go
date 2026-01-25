@@ -67,12 +67,12 @@ func (k *KafkaStateCoordinator) IsLocked(ctx context.Context, msg *InternalMessa
 
 // Start initializes the coordinator for the given topic and begins background synchronization.
 // This method performs three steps:
-//  1. Ensures the compacted redirect topic exists (creates if needed) - blocking
-//  2. Restores local state by consuming the redirect topic's full history - blocking
-//  3. Launches a background consumer to keep state synchronized - non-blocking
+//  1. Ensures the compacted redirect topic exists (creates if needed)
+//  2. Restores local state by consuming the redirect topic's history
+//  3. Launches a background consumer to keep state synchronized
 //
-// This is a blocking call that restores full state before returning. Once it completes
-// successfully, the coordinator is ready to use with accurate lock state.
+// This is a blocking call that restores full state before returning.
+// Once it completes, the coordinator is ready to use with accurate lock state.
 func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 	k.mu.Lock()
 	k.topic = topic
@@ -96,7 +96,7 @@ func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 }
 
 // Acquire locks the key for the given message.
-// It uses optimistic locking: updates local state immediately, then publishes to the distributed redirect topic.
+// It uses optimistic locking: updates local state immediately, then publishes to the redirect topic.
 // On publish failure, local state is rolled back and error returned.
 func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error {
 	id, ok := GetHeaderValue[string](&msg.HeaderData, HeaderID)
@@ -114,6 +114,7 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 	headers.Set(HeaderKey, msg.KeyData)
 	headers.Set(HeaderCoordinatorID, []byte(k.instanceID))
 
+	//TODO: Highlight the payload info
 	redirectMsg := &InternalMessage{
 		topic:         k.redirectTopic(originalTopic),
 		KeyData:       []byte(id),
@@ -152,10 +153,10 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 	return nil
 }
 
-// Release unlocks the key for the given message across all coordinator instances.
+// Release unlocks the key for the given message.
 // It publishes a tombstone (null payload) to the compacted redirect topic,
-// which signals all coordinators to remove the lock. Uses optimistic locking
-// with rollback on failure, similar to Acquire.
+// which signals all coordinators to remove the lock.
+// Uses optimistic locking with rollback on failure, similar to Acquire.
 func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessage) error {
 	id, ok := GetHeaderValue[string](&msg.HeaderData, HeaderID)
 	if !ok {
@@ -228,7 +229,7 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 
 	redirectTopic := k.redirectTopic(topic)
 
-	// Get High Water Marks for the redirect topic
+	// get HWM for the redirect topic
 	metadata, err := k.admin.DescribeTopics(ctx, []string{redirectTopic})
 	if err != nil {
 		return fmt.Errorf("failed to describe redirect topic for sync: %w", err)
@@ -240,7 +241,7 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 
 	targetOffsets := metadata[0].PartitionOffsets()
 
-	// Check if already caught up
+	// check if already caught up
 	k.mu.RLock()
 
 	if k.isCaughtUp(targetOffsets) {
@@ -253,7 +254,7 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 
 	k.logger.Debug("waiting for redirect consumer to catch up", "topic", redirectTopic, "targets", targetOffsets)
 
-	// Set up timeout
+	// default timeout
 	timeout := 30 * time.Second
 	if k.cfg.StateRestoreTimeoutMs > 0 {
 		timeout = time.Duration(k.cfg.StateRestoreTimeoutMs) * time.Millisecond
@@ -264,7 +265,7 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
-	// Wait for condition variable signal or timeout
+	// wait for condition signal or timeout
 	done := make(chan struct{})
 
 	go func() {
@@ -278,7 +279,7 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 
 			k.offsetsCond.Wait()
 
-			// Check if we've exceeded the deadline
+			// check if we've exceeded the deadline
 			if time.Now().After(deadline) {
 				close(done)
 
@@ -291,10 +292,10 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		k.offsetsCond.Broadcast() // Wake up the goroutine
+		k.offsetsCond.Broadcast()
 		return ctx.Err()
 	case <-timer.C:
-		k.offsetsCond.Broadcast() // Wake up the goroutine
+		k.offsetsCond.Broadcast()
 
 		k.mu.RLock()
 		defer k.mu.RUnlock()
@@ -308,6 +309,7 @@ func (k *KafkaStateCoordinator) Synchronize(ctx context.Context) error {
 
 // isCaughtUp checks if consumedOffsets have reached targetOffsets.
 // Caller must hold k.mu (at least RLock).
+// TODO: lock here or in caller?
 func (k *KafkaStateCoordinator) isCaughtUp(targetOffsets map[int32]int64) bool {
 	return isCaughtUpOffsets(k.consumedOffsets, targetOffsets)
 }
@@ -317,13 +319,13 @@ func (k *KafkaStateCoordinator) isCaughtUp(targetOffsets map[int32]int64) bool {
 func isCaughtUpOffsets(consumedOffsets, targetOffsets map[int32]int64) bool {
 	for p, target := range targetOffsets {
 		if target == 0 {
-			// Empty partition
+			// empty partition
 			continue
 		}
 
 		consumed, ok := consumedOffsets[p]
-		// target is HWM (next offset to be written).
-		// We are caught up if we processed (target - 1).
+		// target is HWM (next offset to be written)
+		// we are caught up if we processed (target - 1)
 		if !ok || consumed < target-1 {
 			return false
 		}
@@ -333,8 +335,8 @@ func isCaughtUpOffsets(consumedOffsets, targetOffsets map[int32]int64) bool {
 }
 
 // Close gracefully shuts down the coordinator by stopping background workers
-// and waiting for them to complete. This method cancels the background redirect
-// consumer and blocks until it exits cleanly.
+// and waiting for them to complete.
+// This method cancels the background redirect consumer and blocks until it exits.
 func (k *KafkaStateCoordinator) Close() error {
 	k.mu.Lock()
 
@@ -352,7 +354,6 @@ func (k *KafkaStateCoordinator) Close() error {
 // ensureRedirectTopic creates the compacted redirect topic if it doesn't exist.
 // The redirect topic uses log compaction to retain only the latest lock state
 // per key, and configures segment.ms=100 for fast tombstone propagation.
-// When auto-creation is disabled, this method verifies the topic exists.
 func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic string) error {
 	redirectTopic := k.redirectTopic(topic)
 
@@ -385,16 +386,16 @@ func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic s
 	// Lower values = faster tombstone propagation, higher CPU usage.
 	return k.admin.CreateTopic(ctx, redirectTopic, partitions, k.cfg.ReplicationFactor, map[string]string{
 		"cleanup.policy": "compact",
-		"segment.ms":     "100",
+		"segment.ms":     "100", //TODO: make configurable?
 	})
 }
 
 // restoreState rebuilds local lock state by consuming the redirect topic's history.
-// This is called once during Start() to synchronize with the distributed state
-// before processing begins. Uses an ephemeral consumer group that is deleted
-// after restoration completes. Times out if HWM is not reached within the configured window.
+// This is called once during Start() to synchronize with the distributed state before processing begins.
+// Uses an ephemeral consumer group that is deleted after restoration completes.
+// Times out if HWM is not reached within the configured window.
 func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) error {
-	// 1. Get High Water Marks for the redirect topic
+	// get HWM for the redirect topic
 	metadata, err := k.admin.DescribeTopics(ctx, []string{k.redirectTopic(topic)})
 	if err != nil {
 		return fmt.Errorf("failed to describe redirect topic for restore: %w", err)
@@ -407,7 +408,6 @@ func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) 
 
 	targetOffsets := metadata[0].PartitionOffsets()
 
-	// 2. Check if there's anything to restore
 	hasData := false
 
 	for _, offset := range targetOffsets {
@@ -433,23 +433,23 @@ func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) 
 	defer func() {
 		// clean up ephemeral group
 		go func() {
+			// TODO: add retry?
 			_ = k.admin.DeleteConsumerGroup(context.Background(), refillCfg.GroupID)
 		}()
 	}()
 
-	// 3. Consume until we reach HWM
-	// We use a separate context for the refill loop that we cancel when done
+	// consume until we reach HWM
+	// use a separate context for the refill loop that we cancel when done
 	refillCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// Safety timeout in case we never reach HWM (e.g. if HWM moves while consuming?)
-	// Ideally, we should read until the *snapshot* of HWM we took.
+	// safety timeout in case we never reach HWM (if HWM moves while consuming)
+	// ideally, we should read until the "snapshot" of HWM we took at the start
 	timeout := time.Duration(k.cfg.StateRestoreTimeoutMs) * time.Millisecond
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
 
-	// Wrap context with timeout
 	refillCtx, cancelTimeout := context.WithTimeout(refillCtx, timeout)
 	defer cancelTimeout()
 
@@ -457,7 +457,7 @@ func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) 
 		k:               k,
 		targetOffsets:   targetOffsets,
 		consumedOffsets: make(map[int32]int64),
-		cancel:          cancel, // Cancel the *outer* refillCtx (well, the one we passed to Consume)
+		cancel:          cancel,
 	}
 
 	err = refillConsumer.Consume(refillCtx, []string{k.redirectTopic(topic)}, handler)
@@ -483,7 +483,7 @@ func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic
 		return err
 	}
 
-	// TODO: propagate errors back to the tracker
+	// TODO: propagate errors back to the tracker?
 	k.wg.Add(1)
 
 	go func() {
@@ -500,7 +500,6 @@ func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic
 				return
 			}
 
-			// 2. Handle errors
 			if err != nil {
 				if k.errors != nil {
 					select {
@@ -632,7 +631,7 @@ func (r *RedirectHandler) Handle(ctx context.Context, msg Message) error {
 
 	r.k.mu.Lock()
 	r.k.consumedOffsets[msg.Partition()] = msg.Offset()
-	r.k.offsetsCond.Broadcast() // Wake up any goroutines waiting in Synchronize
+	r.k.offsetsCond.Broadcast() // wake up any goroutines waiting in Synchronize
 	r.k.mu.Unlock()
 
 	return nil

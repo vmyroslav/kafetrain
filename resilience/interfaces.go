@@ -38,7 +38,7 @@ type StateCoordinator interface {
 	Close() error
 }
 
-// Producer publishes messages to Kafka topics (library-agnostic).
+// Producer publishes messages to Kafka topics.
 type Producer interface {
 	// Produce publishes a single message to the specified topic
 	Produce(ctx context.Context, topic string, msg Message) error
@@ -47,7 +47,7 @@ type Producer interface {
 	Close() error
 }
 
-// ConsumerHandler processes messages (library-agnostic).
+// ConsumerHandler processes messages.
 // Implementations contain the business logic for processing Kafka messages.
 type ConsumerHandler interface {
 	Handle(ctx context.Context, msg Message) error
@@ -60,7 +60,7 @@ func (f ConsumerHandlerFunc) Handle(ctx context.Context, msg Message) error {
 	return f(ctx, msg)
 }
 
-// Consumer consumes messages from Kafka topics (library-agnostic).
+// Consumer consumes messages from Kafka topics.
 type Consumer interface {
 	// Consume starts consuming from the specified topics
 	// Blocks until context is canceled or an error occurs
@@ -70,14 +70,14 @@ type Consumer interface {
 	Close() error
 }
 
-// ConsumerFactory creates Consumer instances (library-agnostic).
+// ConsumerFactory creates Consumer instances.
 // Used by ErrorTracker to create retry and redirect consumers.
 type ConsumerFactory interface {
 	// NewConsumer creates a new consumer with the specified group ID
 	NewConsumer(groupID string) (Consumer, error)
 }
 
-// Logger is a minimal logging interface (library-agnostic).
+// Logger is a minimal logging interface.
 type Logger interface {
 	Debug(msg string, fields ...any)
 	Info(msg string, fields ...any)
@@ -85,8 +85,7 @@ type Logger interface {
 	Error(msg string, fields ...any)
 }
 
-// Admin performs Kafka cluster administration operations (library-agnostic).
-// Used by ErrorTracker to create topics and manage consumer groups.
+// Admin performs Kafka cluster administration operations, to create topics and manage consumer groups.
 type Admin interface {
 	// CreateTopic creates a topic with specified configuration.
 	// config keys: "cleanup.policy", "retention.ms", "segment.ms", etc.

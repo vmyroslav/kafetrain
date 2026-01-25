@@ -18,7 +18,7 @@ func NewProducerAdapter(producer sarama.SyncProducer) resilience.Producer {
 }
 
 // Produce implements retry.Producer interface.
-func (p *ProducerAdapter) Produce(ctx context.Context, topic string, msg resilience.Message) error {
+func (p *ProducerAdapter) Produce(_ context.Context, topic string, msg resilience.Message) error {
 	saramaMsg := &sarama.ProducerMessage{
 		Topic:     topic,
 		Key:       sarama.ByteEncoder(msg.Key()),

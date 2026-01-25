@@ -188,38 +188,31 @@ func TestLocalStateCoordinator_Chaos(t *testing.T) {
 	coordinator := NewLocalStateCoordinator()
 	ctx := t.Context()
 
-	// Parameters
 	numGoroutines := 50
 	operationsPerGoroutine := 100
-	numKeys := 10 // Small key space to force collisions
+	numKeys := 10 // small key space to force collisions
 
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
 
-	// Simulate random Acquire/Release operations
+	// simulate random Acquire/Release operations
 	for i := 0; i < numGoroutines; i++ {
 		go func(routineID int) {
 			defer wg.Done()
 
-			// Simple pseudo-random generator seeded with ID
-			// (Use simple logic to avoid math/rand global lock contention if possible, though strict randomness isn't required)
 			for j := 0; j < operationsPerGoroutine; j++ {
-				// Select a key cyclically or semi-randomly
 				keyID := (routineID + j) % numKeys
 				keyStr := string([]byte{byte(keyID)}) // "0", "1", ...
 				topic := testTopicChaos
 
 				msg := &InternalMessage{topic: topic, KeyData: []byte(keyStr)}
 
-				// Action: Lock
 				_ = coordinator.Acquire(ctx, msg, topic)
 
-				// Action: Check (Should be true)
 				if !coordinator.IsLocked(ctx, msg) {
 					t.Errorf("routine %d: key %d should be locked", routineID, keyID)
 				}
 
-				// Action: Release
 				_ = coordinator.Release(ctx, msg)
 			}
 		}(i)
@@ -227,13 +220,13 @@ func TestLocalStateCoordinator_Chaos(t *testing.T) {
 
 	wg.Wait()
 
-	// Verify all keys are unlocked and map is clean
+	// verify all keys are unlocked and map is clean
 	for k := 0; k < numKeys; k++ {
 		keyStr := string([]byte{byte(k)})
 		topic := testTopicChaos
 		count, exists := coordinator.lm.getRefCount(topic, keyStr)
 
-		assert.False(t, exists, "Key %d should not exist in map", k)
-		assert.Equal(t, 0, count, "Key %d ref count should be 0", k)
+		assert.False(t, exists, "key %d should not exist in map", k)
+		assert.Equal(t, 0, count, "key %d ref count should be 0", k)
 	}
 }

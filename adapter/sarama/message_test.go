@@ -57,13 +57,13 @@ func TestHeaders(t *testing.T) {
 		assert.True(t, ok)
 		assert.Equal(t, []byte("val1"), val)
 
-		// Update existing
+		// update existing
 		h.Set("key1", []byte("val1-updated"))
 		val, ok = h.Get("key1")
 		assert.True(t, ok)
 		assert.Equal(t, []byte("val1-updated"), val)
 
-		// Get non-existent
+		// get non-existent
 		_, ok = h.Get("non-existent")
 		assert.False(t, ok)
 	})
@@ -82,7 +82,7 @@ func TestHeaders(t *testing.T) {
 		_, ok = h.Get("k2")
 		assert.True(t, ok)
 
-		// Delete non-existent (should not panic)
+		// delete non-existent (should not panic)
 		h.Delete("non-existent")
 	})
 
@@ -109,13 +109,13 @@ func TestHeaders(t *testing.T) {
 		cloned.Set("k1", []byte("v1-cloned"))
 		cloned.Set("k2", []byte("v2"))
 
-		// Original should be unchanged
+		// original should be unchanged
 		val, _ := h.Get("k1")
 		assert.Equal(t, []byte("v1"), val)
 		_, ok := h.Get("k2")
 		assert.False(t, ok)
 
-		// Cloned should have changes
+		// cloned should have changes
 		val, _ = cloned.Get("k1")
 		assert.Equal(t, []byte("v1-cloned"), val)
 		_, ok = cloned.Get("k2")

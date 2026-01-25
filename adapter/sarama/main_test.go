@@ -9,6 +9,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/IBM/sarama"
+	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go/modules/kafka"
 )
 
@@ -57,4 +59,26 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
+}
+
+// produceTestMessage produces a message to the given topic.
+func produceTestMessage(t *testing.T, broker, topic, key, value string) {
+	t.Helper()
+
+	config := sarama.NewConfig()
+	config.Producer.Return.Successes = true
+	config.Version = sarama.V4_1_0_0
+
+	producer, err := sarama.NewSyncProducer([]string{broker}, config)
+	require.NoError(t, err, "failed to create producer")
+	defer producer.Close()
+
+	msg := &sarama.ProducerMessage{
+		Topic: topic,
+		Key:   sarama.StringEncoder(key),
+		Value: sarama.StringEncoder(value),
+	}
+
+	_, _, err = producer.SendMessage(msg)
+	require.NoError(t, err, "failed to produce message")
 }

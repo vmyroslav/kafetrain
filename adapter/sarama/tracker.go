@@ -14,11 +14,7 @@ type managerOptions struct {
 
 // NewResilienceTracker creates a configured ErrorTracker using the Sarama client.
 // It handles the creation of all necessary adapters and internal components.
-func NewResilienceTracker(
-	client sarama.Client,
-	cfg *resilience.Config,
-	opts ...ManagerOption,
-) (*resilience.ErrorTracker, error) {
+func NewResilienceTracker(cfg *resilience.Config, client sarama.Client, opts ...ManagerOption) (*resilience.ErrorTracker, error) {
 	options := &managerOptions{
 		logger: resilience.NewNoOpLogger(),
 	}

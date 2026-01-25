@@ -70,28 +70,6 @@ func setupIsolatedKafkaContainer(t *testing.T, ctx context.Context) (string, *ka
 	return brokers[0], kafkaContainer, cleanup
 }
 
-// produceTestMessage produces a message to the given topic.
-func produceTestMessage(t *testing.T, broker, topic, key, value string) {
-	t.Helper()
-
-	config := sarama.NewConfig()
-	config.Producer.Return.Successes = true
-	config.Version = sarama.V4_1_0_0
-
-	producer, err := sarama.NewSyncProducer([]string{broker}, config)
-	require.NoError(t, err, "failed to create producer")
-	defer producer.Close()
-
-	msg := &sarama.ProducerMessage{
-		Topic: topic,
-		Key:   sarama.StringEncoder(key),
-		Value: sarama.StringEncoder(value),
-	}
-
-	_, _, err = producer.SendMessage(msg)
-	require.NoError(t, err, "failed to produce message")
-}
-
 // TestIntegration_SaramaAdmin tests the Sarama Admin adapter implementation.
 // Verifies that the Admin interface correctly creates topics and manages consumer groups.
 func TestIntegration_SaramaAdmin(t *testing.T) {

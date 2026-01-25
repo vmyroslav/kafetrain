@@ -8,7 +8,7 @@ import (
 )
 
 // Message wraps sarama.ConsumerMessage to implement retry.Message interface.
-// This is a thin adapter that allows kafka-resilience core to work with Sarama messages.
+// This is an adapter that allows kafka-resilience core to work with Sarama messages.
 type Message struct {
 	*sarama.ConsumerMessage
 }
@@ -84,7 +84,6 @@ func (h *Headers) Set(key string, value []byte) {
 		}
 	}
 
-	// Header doesn't exist, add it
 	h.headers = append(h.headers, &sarama.RecordHeader{
 		Key:   []byte(key),
 		Value: value,

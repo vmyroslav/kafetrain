@@ -228,7 +228,7 @@ func TestNewDefaultConfig_ReplicationFactor(t *testing.T) {
 
 	cfg := NewDefaultConfig()
 
-	// Verify default replication factor is set
+	// verify default replication factor
 	assert.Equal(t, int16(1), cfg.ReplicationFactor)
 }
 
@@ -237,7 +237,7 @@ func TestConfig_Validate_ZeroMaxRetries(t *testing.T) {
 
 	cfg := NewDefaultConfig()
 	cfg.GroupID = testGroupID
-	cfg.MaxRetries = 0 // Valid - means send directly to DLQ on first failure
+	cfg.MaxRetries = 0 // valid - send directly to DLQ on first failure
 
 	err := cfg.Validate()
 	require.NoError(t, err)

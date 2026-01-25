@@ -3,46 +3,17 @@ package resilience
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// Helper to create mock messages
-func createMockRedirectMsg(topic, key, coordinatorID string, isLock bool) *InternalMessage {
-	var value []byte
-	if isLock {
-		value = []byte(key)
-	} else {
-		value = nil
-	}
-
-	hl := HeaderList{}
-	hl.Set(HeaderCoordinatorID, []byte(coordinatorID))
-	hl.Set(HeaderTopic, []byte(topic))
-	hl.Set("key", []byte(key))
-
-	return &InternalMessage{
-		topic:      "redirect_" + topic,
-		KeyData:    []byte(key),
-		Payload:    value,
-		HeaderData: hl,
-	}
-}
-
-type mockTopicMetadata struct {
-	name       string
-	partitions int32
-	offsets    map[int32]int64
-}
-
-func (m *mockTopicMetadata) Name() string                      { return m.name }
-func (m *mockTopicMetadata) Partitions() int32                 { return m.partitions }
-func (m *mockTopicMetadata) PartitionOffsets() map[int32]int64 { return m.offsets }
-
 func TestKafkaStateCoordinator_Acquire(t *testing.T) {
-	// Setup Mocks
+	t.Parallel()
+
 	mockProducer := &ProducerMock{
 		ProduceFunc: func(_ context.Context, _ string, _ Message) error {
 			return nil
@@ -52,8 +23,8 @@ func TestKafkaStateCoordinator_Acquire(t *testing.T) {
 	mockAdmin := &AdminMock{}
 	mockFactory := &ConsumerFactoryMock{}
 	mockLogger := &LoggerMock{
-		DebugFunc: func(_ string, _ ...interface{}) {},
-		ErrorFunc: func(_ string, _ ...interface{}) {},
+		DebugFunc: func(_ string, _ ...any) {},
+		ErrorFunc: func(_ string, _ ...any) {},
 	}
 
 	cfg := &Config{
@@ -69,47 +40,43 @@ func TestKafkaStateCoordinator_Acquire(t *testing.T) {
 		make(chan error, 1),
 	)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	msg := &InternalMessage{
 		topic:   "orders",
 		KeyData: []byte("order-123"),
 	}
 	msg.HeaderData.Set("custom", []byte("val"))
 
-	// Test Acquire
 	err := coordinator.Acquire(ctx, msg, "orders")
 	require.NoError(t, err)
 
-	// Optimistic Locking: Should be locked immediately
+	// optimistic locking: should be locked immediately
 	assert.True(t, coordinator.IsLocked(ctx, msg))
 
-	// Verify Producer was called correctly
 	assert.Len(t, mockProducer.ProduceCalls(), 1)
 	call := mockProducer.ProduceCalls()[0]
 
-	// Verify Topic
 	assert.Equal(t, "redirect_orders", call.Topic)
 
-	// Verify Headers
 	headers := call.Msg.Headers().All()
 	assert.Contains(t, headers, "key")
 	assert.Equal(t, []byte("order-123"), headers["key"])
 	assert.Contains(t, headers, HeaderTopic)
 	assert.Equal(t, []byte("orders"), headers[HeaderTopic])
-
-	// Verify CoordinatorID Header
 	assert.Contains(t, headers, HeaderCoordinatorID)
 	assert.Equal(t, []byte(coordinator.instanceID), headers[HeaderCoordinatorID])
 }
 
 func TestKafkaStateCoordinator_Release(t *testing.T) {
+	t.Parallel()
+
 	mockProducer := &ProducerMock{
 		ProduceFunc: func(_ context.Context, _ string, _ Message) error {
 			return nil
 		},
 	}
 	mockLogger := &LoggerMock{
-		DebugFunc: func(_ string, _ ...interface{}) {},
+		DebugFunc: func(_ string, _ ...any) {},
 	}
 
 	cfg := &Config{
@@ -125,28 +92,25 @@ func TestKafkaStateCoordinator_Release(t *testing.T) {
 		make(chan error, 1),
 	)
 
-	ctx := context.Background()
+	ctx := t.Context()
 	msg := &InternalMessage{
 		topic:   "orders",
 		KeyData: []byte("order-123"),
 	}
 
-	// Manually lock it first to test release
+	// lock it first
 	_ = coordinator.local.Acquire(ctx, msg, "orders")
 	assert.True(t, coordinator.IsLocked(ctx, msg))
 
-	// Test Release
 	err := coordinator.Release(ctx, msg)
 	require.NoError(t, err)
 
-	// Optimistic Release: Should be unlocked immediately
+	// optimistic release: should be unlocked immediately
 	assert.False(t, coordinator.IsLocked(ctx, msg))
 
-	// Verify Producer was called
 	assert.Len(t, mockProducer.ProduceCalls(), 1)
 	call := mockProducer.ProduceCalls()[0]
 
-	// Verify CoordinatorID Header on Tombstone
 	headers := call.Msg.Headers().All()
 	assert.Contains(t, headers, HeaderCoordinatorID)
 	assert.Equal(t, []byte(coordinator.instanceID), headers[HeaderCoordinatorID])
@@ -171,7 +135,6 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 		},
 	}
 
-	// Mock Consumer for Restoration
 	restoreConsumer := &ConsumerMock{
 		ConsumeFunc: func(ctx context.Context, _ []string, handler ConsumerHandler) error {
 			// Simulate reading a lock message from redirect topic
@@ -219,26 +182,27 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 
 	coordinator := NewKafkaStateCoordinator(
 		cfg,
-		&LoggerMock{DebugFunc: func(_ string, _ ...interface{}) {}, InfoFunc: func(_ string, _ ...interface{}) {}},
+		&LoggerMock{DebugFunc: func(_ string, _ ...any) {}, InfoFunc: func(_ string, _ ...any) {}},
 		&ProducerMock{},
 		mockFactory,
 		mockAdmin,
 		make(chan error, 1),
 	)
 
-	// Test Start
-	err := coordinator.Start(context.Background(), "orders")
+	err := coordinator.Start(t.Context(), "orders")
 	require.NoError(t, err)
 
-	// Verify State was restored
+	// verify state was restored
 	msg := &InternalMessage{
 		topic:   "orders",
 		KeyData: []byte("order-locked"),
 	}
-	assert.True(t, coordinator.IsLocked(context.Background(), msg))
+	assert.True(t, coordinator.IsLocked(t.Context(), msg))
 }
 
 func TestKafkaStateCoordinator_Acquire_ProducerError(t *testing.T) {
+	t.Parallel()
+
 	mockProducer := &ProducerMock{
 		ProduceFunc: func(_ context.Context, _ string, _ Message) error {
 			return errors.New("kafka error")
@@ -248,7 +212,7 @@ func TestKafkaStateCoordinator_Acquire_ProducerError(t *testing.T) {
 	coordinator := NewKafkaStateCoordinator(
 		&Config{RedirectTopicPrefix: "redirect"},
 		&LoggerMock{
-			WarnFunc: func(_ string, _ ...interface{}) {},
+			WarnFunc: func(_ string, _ ...any) {},
 		},
 		mockProducer,
 		&ConsumerFactoryMock{},
@@ -256,13 +220,13 @@ func TestKafkaStateCoordinator_Acquire_ProducerError(t *testing.T) {
 		make(chan error),
 	)
 
-	err := coordinator.Acquire(context.Background(), &InternalMessage{topic: "t", KeyData: []byte("k")}, "t")
+	err := coordinator.Acquire(t.Context(), &InternalMessage{topic: "t", KeyData: []byte("k")}, "t")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kafka error")
 
 	// Verify Rollback: Should NOT be locked
 	msg := &InternalMessage{topic: "t", KeyData: []byte("k")}
-	assert.False(t, coordinator.IsLocked(context.Background(), msg))
+	assert.False(t, coordinator.IsLocked(t.Context(), msg))
 }
 
 func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
@@ -286,10 +250,10 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 	echoMsg.HeaderData.Set("key", []byte("k1"))
 
 	// We call Acquire first to set local ref count to 1 (simulating the source of the echo)
-	_ = coordinator.local.Acquire(context.Background(), &InternalMessage{topic: "orders", KeyData: []byte("k1")}, "orders")
+	_ = coordinator.local.Acquire(t.Context(), &InternalMessage{topic: "orders", KeyData: []byte("k1")}, "orders")
 
 	// Process the echo message
-	err := coordinator.processRedirectMessage(context.Background(), echoMsg)
+	err := coordinator.processRedirectMessage(t.Context(), echoMsg)
 	require.NoError(t, err)
 
 	// Ref count should still be 1 (Not incremented to 2)
@@ -306,7 +270,7 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 	foreignMsg.HeaderData.Set(HeaderTopic, []byte("orders"))
 	foreignMsg.HeaderData.Set("key", []byte("k1"))
 
-	err = coordinator.processRedirectMessage(context.Background(), foreignMsg)
+	err = coordinator.processRedirectMessage(t.Context(), foreignMsg)
 	require.NoError(t, err)
 
 	// Ref count should now be 2
@@ -325,18 +289,18 @@ func TestKafkaStateCoordinator_ForeignTombstone(t *testing.T) {
 	)
 
 	// Simulate we have a lock locally (maybe restored or acquired)
-	_ = coordinator.local.Acquire(context.Background(), &InternalMessage{topic: "orders", KeyData: []byte("key1")}, "orders")
+	_ = coordinator.local.Acquire(t.Context(), &InternalMessage{topic: "orders", KeyData: []byte("key1")}, "orders")
 	msg := &InternalMessage{topic: "orders", KeyData: []byte("key1")}
-	assert.True(t, coordinator.IsLocked(context.Background(), msg))
+	assert.True(t, coordinator.IsLocked(t.Context(), msg))
 
 	// Receive a Tombstone from a different coordinator (Failover scenario)
 	tombstone := createMockRedirectMsg("orders", "key1", "other-instance", false)
 
-	err := coordinator.processRedirectMessage(context.Background(), tombstone)
+	err := coordinator.processRedirectMessage(t.Context(), tombstone)
 	require.NoError(t, err)
 
 	// Should be unlocked
-	assert.False(t, coordinator.IsLocked(context.Background(), msg))
+	assert.False(t, coordinator.IsLocked(t.Context(), msg))
 }
 
 func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
@@ -420,7 +384,7 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 
 	coordinator := NewKafkaStateCoordinator(
 		&Config{RedirectTopicPrefix: "redirect", StateRestoreTimeoutMs: 100},
-		&LoggerMock{DebugFunc: func(_ string, _ ...interface{}) {}, InfoFunc: func(_ string, _ ...interface{}) {}},
+		&LoggerMock{DebugFunc: func(_ string, _ ...any) {}, InfoFunc: func(_ string, _ ...any) {}},
 		&ProducerMock{},
 		mockFactory,
 		mockAdmin,
@@ -428,10 +392,235 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 	)
 
 	// Start Instance B
-	err := coordinator.Start(context.Background(), topic)
+	err := coordinator.Start(t.Context(), topic)
 	require.NoError(t, err)
 
 	// Verify Instance B has the lock
 	checkMsg := &InternalMessage{topic: topic, KeyData: []byte(key)}
-	assert.True(t, coordinator.IsLocked(context.Background(), checkMsg), "Instance B should have restored the lock")
+	assert.True(t, coordinator.IsLocked(t.Context(), checkMsg), "Instance B should have restored the lock")
 }
+
+const testTopicOrders = "orders"
+
+func TestKafkaStateCoordinator_Synchronize_TopicNotStarted(t *testing.T) {
+	coordinator := NewKafkaStateCoordinator(
+		&Config{},
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		nil,
+	)
+
+	// should fail because Start() wasn't called (topic is empty)
+	err := coordinator.Synchronize(t.Context())
+	require.ErrorContains(t, err, "coordinator not started")
+}
+
+func TestKafkaStateCoordinator_Synchronize_EmptyRedirectTopic(t *testing.T) {
+	mockAdmin := &AdminMock{
+		DescribeTopicsFunc: func(_ context.Context, _ []string) ([]TopicMetadata, error) {
+			// return metadata indicating empty topic
+			return []TopicMetadata{
+				&mockTopicMetadata{
+					name:       "redirect_orders",
+					partitions: 1,
+					offsets:    map[int32]int64{}, // no offsets
+				},
+			}, nil
+		},
+	}
+
+	coordinator := NewKafkaStateCoordinator(
+		&Config{RedirectTopicPrefix: "redirect"},
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		mockAdmin,
+		nil,
+	)
+
+	// manually set topic as if Start() was called
+	coordinator.mu.Lock()
+	coordinator.topic = testTopicOrders
+	coordinator.mu.Unlock()
+
+	// should return immediately
+	err := coordinator.Synchronize(t.Context())
+	assert.NoError(t, err)
+}
+
+func TestKafkaStateCoordinator_Synchronize_AlreadyCaughtUp(t *testing.T) {
+	mockAdmin := &AdminMock{
+		DescribeTopicsFunc: func(_ context.Context, _ []string) ([]TopicMetadata, error) {
+			return []TopicMetadata{
+				&mockTopicMetadata{
+					name:       "redirect_orders",
+					partitions: 1,
+					offsets:    map[int32]int64{0: 10}, // HWM = 10
+				},
+			}, nil
+		},
+	}
+
+	coordinator := NewKafkaStateCoordinator(
+		&Config{RedirectTopicPrefix: "redirect"},
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		mockAdmin,
+		nil,
+	)
+
+	coordinator.mu.Lock()
+	coordinator.topic = testTopicOrders
+	// simulate that we have already consumed up to offset 9 (HWM 10 means next is 10, so 9 is the last one)
+	coordinator.consumedOffsets[0] = 9
+	coordinator.mu.Unlock()
+
+	err := coordinator.Synchronize(t.Context())
+	assert.NoError(t, err)
+}
+
+func TestKafkaStateCoordinator_Synchronize_BlocksUntilCaughtUp(t *testing.T) {
+	mockAdmin := &AdminMock{
+		DescribeTopicsFunc: func(_ context.Context, _ []string) ([]TopicMetadata, error) {
+			return []TopicMetadata{
+				&mockTopicMetadata{
+					name:       "redirect_orders",
+					partitions: 1,
+					offsets:    map[int32]int64{0: 10}, // HWM = 10
+				},
+			}, nil
+		},
+	}
+
+	coordinator := NewKafkaStateCoordinator(
+		&Config{RedirectTopicPrefix: "redirect"},
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...any) {
+				// no-op
+			},
+		},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		mockAdmin,
+		nil,
+	)
+
+	coordinator.mu.Lock()
+	coordinator.topic = testTopicOrders
+	coordinator.consumedOffsets[0] = 5 // lagging behind (5 < 9)
+	coordinator.mu.Unlock()
+
+	// use a channel to signal when Synchronize returns
+	done := make(chan error)
+
+	go func() {
+		done <- coordinator.Synchronize(t.Context())
+	}()
+
+	// ensure it blocks initially
+	select {
+	case <-done:
+		t.Fatal("Synchronize should have blocked")
+	case <-time.After(100 * time.Millisecond):
+		// expected behavior
+	}
+
+	// simulate background consumer updating the offset
+	coordinator.mu.Lock()
+	coordinator.consumedOffsets[0] = 9  // catch up
+	coordinator.offsetsCond.Broadcast() // signal that offsets updated
+	coordinator.mu.Unlock()
+
+	// now it should complete
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(1 * time.Second):
+		t.Fatal("Synchronize failed to return after catching up")
+	}
+}
+
+func TestKafkaStateCoordinator_Synchronize_ContextCancellation(t *testing.T) {
+	mockAdmin := &AdminMock{
+		DescribeTopicsFunc: func(_ context.Context, _ []string) ([]TopicMetadata, error) {
+			return []TopicMetadata{
+				&mockTopicMetadata{
+					name:       "redirect_orders",
+					partitions: 1,
+					offsets:    map[int32]int64{0: 100}, // HWM = 100
+				},
+			}, nil
+		},
+	}
+
+	coordinator := NewKafkaStateCoordinator(
+		&Config{RedirectTopicPrefix: "redirect"},
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...any) {
+				// no-op
+			},
+		},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		mockAdmin,
+		nil,
+	)
+
+	coordinator.mu.Lock()
+	coordinator.topic = testTopicOrders
+	coordinator.consumedOffsets[0] = 5 // lagging
+	coordinator.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(t.Context())
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+
+		err := coordinator.Synchronize(ctx)
+		assert.ErrorIs(t, err, context.Canceled)
+	}()
+
+	// let it block for a bit
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	wg.Wait()
+}
+
+// Helper to create mock messages
+func createMockRedirectMsg(topic, key, coordinatorID string, isLock bool) *InternalMessage {
+	var value []byte
+	if isLock {
+		value = []byte(key)
+	} else {
+		value = nil
+	}
+
+	hl := HeaderList{}
+	hl.Set(HeaderCoordinatorID, []byte(coordinatorID))
+	hl.Set(HeaderTopic, []byte(topic))
+	hl.Set("key", []byte(key))
+
+	return &InternalMessage{
+		topic:      "redirect_" + topic,
+		KeyData:    []byte(key),
+		Payload:    value,
+		HeaderData: hl,
+	}
+}
+
+type mockTopicMetadata struct {
+	name       string
+	partitions int32
+	offsets    map[int32]int64
+}
+
+func (m *mockTopicMetadata) Name() string                      { return m.name }
+func (m *mockTopicMetadata) Partitions() int32                 { return m.partitions }
+func (m *mockTopicMetadata) PartitionOffsets() map[int32]int64 { return m.offsets }

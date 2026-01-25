@@ -51,11 +51,11 @@ type Config struct {
 	RetryTopicPartitions int32
 
 	// ReplicationFactor specifies the replication factor for auto-created topics (retry, redirect, DLQ).
-	// For production environments, this should typically be set to 3.
+	// For production environments, this should typically be set higher than 1 for fault tolerance.
 	// Default: 1
 	ReplicationFactor int16
 
-	// FreeOnDLQ determines whether to release locks (send tombstones) when a message is sent to DLQ.
+	// FreeOnDLQ determines whether to release locks when a message is sent to DLQ.
 	// If false, locks remain until manually cleared, preserving ordering guarantees.
 	// Default: false
 	FreeOnDLQ bool

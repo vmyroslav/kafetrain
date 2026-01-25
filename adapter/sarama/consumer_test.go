@@ -136,33 +136,33 @@ func TestConsumerAdapter_Consume(t *testing.T) {
 		m := new(mockConsumerGroup)
 		adapter := NewConsumerAdapter(m)
 
-		// Mock Consume to return nil (successful loop iteration)
-		// We'll simulate 1 iteration then context cancellation to break loop
-		ctx, cancel := context.WithCancel(context.Background())
+		// mock Consume to return nil (successful loop iteration)
+		// simulate 1 iteration then context cancellation to break loop
+		ctx, cancel := context.WithCancel(t.Context())
 
-		// First call succeeds
 		m.On("Consume", mock.MatchedBy(func(c context.Context) bool {
 			return c == ctx
 		}), []string{"topic-1"}, mock.AnythingOfType("*sarama.consumerGroupHandler")).Return(nil).Run(func(args mock.Arguments) {
-			cancel() // Cancel context to stop the loop
+			cancel() // cancel context to stop the loop
 		})
 
 		err := adapter.Consume(ctx, []string{"topic-1"}, &mockResilienceHandler{})
 
-		// Should return context Canceled
+		// should return context Canceled
 		assert.ErrorIs(t, err, context.Canceled)
 		m.AssertExpectations(t)
 	})
 
 	t.Run("failure propagation", func(t *testing.T) {
 		t.Parallel()
+
 		m := new(mockConsumerGroup)
 		adapter := NewConsumerAdapter(m)
 
 		expectedErr := errors.New("kafka error")
 		m.On("Consume", mock.Anything, mock.Anything, mock.Anything).Return(expectedErr)
 
-		err := adapter.Consume(context.Background(), []string{"topic-1"}, &mockResilienceHandler{})
+		err := adapter.Consume(t.Context(), []string{"topic-1"}, &mockResilienceHandler{})
 
 		assert.ErrorIs(t, err, expectedErr)
 		m.AssertExpectations(t)
@@ -183,10 +183,9 @@ func TestConsumerGroupHandler_ConsumeClaim(t *testing.T) {
 			messages: make(chan *sarama.ConsumerMessage, 2),
 		}
 
-		ctx := context.Background()
+		ctx := t.Context()
 		session.On("Context").Return(ctx)
 
-		// Create test messages
 		msg1 := &sarama.ConsumerMessage{
 			Topic:     "test-topic",
 			Partition: 0,
@@ -202,29 +201,27 @@ func TestConsumerGroupHandler_ConsumeClaim(t *testing.T) {
 			Value:     []byte("value-2"),
 		}
 
-		// Fill channel
+		// fill channel
 		claim.messages <- msg1
 		claim.messages <- msg2
 		close(claim.messages)
 
-		// Expectations
-		// 1. Handler called for msg1
+		// handler called for msg1
 		retryHandler.On("Handle", ctx, mock.MatchedBy(func(m resilience.Message) bool {
 			return string(m.Key()) == "key-1" && string(m.Value()) == "value-1"
 		})).Return(nil)
 
-		// 2. Session marked for msg1
+		// session marked for msg1
 		session.On("MarkMessage", msg1, "").Return()
 
-		// 3. Handler called for msg2
+		// handler called for msg2
 		retryHandler.On("Handle", ctx, mock.MatchedBy(func(m resilience.Message) bool {
 			return string(m.Key()) == "key-2" && string(m.Value()) == "value-2"
 		})).Return(nil)
 
-		// 4. Session marked for msg2
+		// session marked for msg2
 		session.On("MarkMessage", msg2, "").Return()
 
-		// Run
 		err := handler.ConsumeClaim(session, claim)
 
 		assert.NoError(t, err)
@@ -243,7 +240,7 @@ func TestConsumerGroupHandler_ConsumeClaim(t *testing.T) {
 			messages: make(chan *sarama.ConsumerMessage, 2),
 		}
 
-		ctx := context.Background()
+		ctx := t.Context()
 		session.On("Context").Return(ctx)
 
 		msg1 := &sarama.ConsumerMessage{Value: []byte("fail-me")}
@@ -256,18 +253,16 @@ func TestConsumerGroupHandler_ConsumeClaim(t *testing.T) {
 		expectedErr := errors.New("processing failed")
 		retryHandler.On("Handle", ctx, mock.Anything).Return(expectedErr)
 
-		// Should NOT call MarkMessage for msg1
-
 		err := handler.ConsumeClaim(session, claim)
 
 		assert.ErrorIs(t, err, expectedErr)
 		retryHandler.AssertExpectations(t)
-		// Verify msg2 was NOT consumed (mock would panic if called unexpectedly)
 	})
 }
 
 func TestConsumerAdapter_Close(t *testing.T) {
 	t.Parallel()
+
 	m := new(mockConsumerGroup)
 	adapter := NewConsumerAdapter(m)
 

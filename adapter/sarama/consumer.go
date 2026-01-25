@@ -23,7 +23,7 @@ func (c *ConsumerAdapter) Consume(ctx context.Context, topics []string, handler 
 		retryHandler: handler,
 	}
 
-	// Start consuming, the loop is required because Sarama's Consume method returns nil
+	// start consuming, the loop is required because Sarama's Consume method returns nil
 	// when a rebalance occurs, necessitating a restart to rejoin the consumer group.
 	for {
 		if err := c.consumerGroup.Consume(ctx, topics, saramaHandler); err != nil {
