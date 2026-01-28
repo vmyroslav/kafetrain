@@ -3,6 +3,7 @@ package resilience
 import (
 	"fmt"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -160,9 +161,13 @@ type Header struct {
 
 type HeaderList struct {
 	list []Header
+	mu   sync.RWMutex
 }
 
 func (h *HeaderList) Get(key string) ([]byte, bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
 	for _, header := range h.list {
 		if string(header.Key) == key {
 			return header.Value, true
@@ -173,6 +178,9 @@ func (h *HeaderList) Get(key string) ([]byte, bool) {
 }
 
 func (h *HeaderList) Set(key string, value []byte) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	// find and update existing header in list to preserve order
 	for i, header := range h.list {
 		if string(header.Key) == key {
@@ -189,6 +197,9 @@ func (h *HeaderList) Set(key string, value []byte) {
 }
 
 func (h *HeaderList) All() map[string][]byte {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
 	result := make(map[string][]byte, len(h.list))
 	for _, header := range h.list {
 		result[string(header.Key)] = header.Value
@@ -198,6 +209,9 @@ func (h *HeaderList) All() map[string][]byte {
 }
 
 func (h *HeaderList) Delete(key string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	newHeaders := make([]Header, 0, len(h.list))
 	for _, header := range h.list {
 		if string(header.Key) != key {
@@ -209,6 +223,9 @@ func (h *HeaderList) Delete(key string) {
 }
 
 func (h *HeaderList) Clone() Headers {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
 	cloned := &HeaderList{
 		list: make([]Header, len(h.list)),
 	}
@@ -224,6 +241,9 @@ func (h *HeaderList) Clone() Headers {
 }
 
 func (h *HeaderList) Range(fn func(key string, value []byte) bool) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
 	for _, header := range h.list {
 		if !fn(string(header.Key), header.Value) {
 			break

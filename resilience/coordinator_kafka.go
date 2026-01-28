@@ -101,7 +101,12 @@ func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error {
 	id, ok := GetHeaderValue[string](&msg.HeaderData, HeaderID)
 	if !ok {
-		id = string(msg.KeyData)
+		// If no ID is provided (e.g., first failure), generate a unique one.
+		// We MUST persist this to the message headers so that:
+		// 1. The Retry Topic receives this ID.
+		// 2. Subsequent Release() calls use the same ID.
+		id = uuid.New().String()
+		_ = SetHeader(&msg.HeaderData, HeaderID, id)
 	}
 
 	// optimistic locking: update local state immediately
@@ -109,17 +114,22 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 		return err
 	}
 
-	headers := HeaderList{}
-	headers.Set(HeaderTopic, []byte(originalTopic))
-	headers.Set(HeaderKey, msg.KeyData)
-	headers.Set(HeaderCoordinatorID, []byte(k.instanceID))
+	// Use a clone of the original headers to ensure we preserve any metadata (like HeaderID)
+	// while adding coordinator-specific headers.
+	redirectHeaders := msg.HeaderData.Clone().(*HeaderList)
+	redirectHeaders.Set(HeaderTopic, []byte(originalTopic))
+	redirectHeaders.Set(HeaderKey, msg.KeyData)
+	redirectHeaders.Set(HeaderCoordinatorID, []byte(k.instanceID))
+
+	// Ensure the ID is in the headers (it should be there via SetHeader above, but being explicit)
+	redirectHeaders.Set(HeaderID, []byte(id))
 
 	//TODO: Highlight the payload info
 	redirectMsg := &InternalMessage{
 		topic:         k.redirectTopic(originalTopic),
-		KeyData:       []byte(id),
+		KeyData:       []byte(id), // Use the unique ID as the Kafka Key to prevent compaction merging
 		Payload:       []byte(id),
-		HeaderData:    headers,
+		HeaderData:    *redirectHeaders,
 		TimestampData: time.Now(),
 	}
 
@@ -173,16 +183,22 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 		return err
 	}
 
-	headers := HeaderList{}
-	headers.Set(HeaderTopic, []byte(topic))
-	headers.Set(HeaderKey, msg.KeyData)
-	headers.Set(HeaderCoordinatorID, []byte(k.instanceID))
+	// Use a clone of the original headers to ensure we preserve metadata (like HeaderID)
+	tombstoneHeaders := msg.HeaderData.Clone().(*HeaderList)
+	tombstoneHeaders.Set(HeaderTopic, []byte(topic))
+	tombstoneHeaders.Set(HeaderKey, msg.KeyData)
+	tombstoneHeaders.Set(HeaderCoordinatorID, []byte(k.instanceID))
+
+	// Ensure ID is present if we have it
+	if id != "" {
+		tombstoneHeaders.Set(HeaderID, []byte(id))
+	}
 
 	tombstoneMsg := &InternalMessage{
 		topic:         k.redirectTopic(topic),
 		KeyData:       []byte(id),
 		Payload:       nil, // tombstone
-		HeaderData:    headers,
+		HeaderData:    *tombstoneHeaders,
 		TimestampData: time.Now(),
 	}
 
