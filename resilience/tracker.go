@@ -409,6 +409,17 @@ func (t *ErrorTracker) Free(ctx context.Context, msg Message) error {
 // and handles max retries exceeded by sending to DLQ. This is where the core
 // retry orchestration logic lives.
 func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *InternalMessage, lastError error) error {
+	// Check for non-retriable errors - send directly to DLQ, bypassing retry topic
+	var notRetriable *NotRetriableError
+	if errors.As(lastError, &notRetriable) {
+		t.logger.Warn("non-retriable error, sending directly to DLQ",
+			"topic", msg.topic,
+			"key", string(msg.KeyData),
+			"error", lastError,
+		)
+		return t.SendToDLQ(ctx, msg, lastError)
+	}
+
 	// Calculate retry metadata
 	currentAttempt, _ := GetHeaderValue[int](&msg.HeaderData, HeaderRetryAttempt)
 
@@ -727,32 +738,25 @@ func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, msg Message) error 
 	}
 }
 
-// RetriableError wraps an error to indicate if it should be retried.
-// This allows fine-grained control over retry behavior: some errors may be
-// permanent (e.g., validation failures) and shouldn't be retried, while others
-// are transient (e.g., network timeouts) and should be retried.
-type RetriableError struct {
+// NotRetriableError wraps an error to indicate it should NOT be retried.
+// Messages that fail with this error type bypass the retry topic and go directly to DLQ.
+// Use this for permanent failures like validation errors, malformed data, or business rule violations.
+// By default, all errors are retriable. Wrap an error in NotRetriableError to skip retries.
+type NotRetriableError struct {
 	Origin error
-	Retry  bool
 }
 
-// NewRetriableError creates a RetriableError with the specified retry behavior.
-// Use shouldRetry=true for transient errors, false for permanent errors.
-func NewRetriableError(origin error, shouldRetry bool) *RetriableError {
-	return &RetriableError{Origin: origin, Retry: shouldRetry}
+// NewNotRetriableError creates a NotRetriableError that will bypass retry and go directly to DLQ.
+func NewNotRetriableError(origin error) *NotRetriableError {
+	return &NotRetriableError{Origin: origin}
 }
 
 // Error returns the error message from the wrapped origin error.
-func (e RetriableError) Error() string {
+func (e NotRetriableError) Error() string {
 	return e.Origin.Error()
 }
 
 // Unwrap returns the wrapped origin error for use with errors.Is/As.
-func (e RetriableError) Unwrap() error {
+func (e NotRetriableError) Unwrap() error {
 	return e.Origin
-}
-
-// ShouldRetry returns true if this error should trigger a retry, false otherwise.
-func (e RetriableError) ShouldRetry() bool {
-	return e.Retry
 }

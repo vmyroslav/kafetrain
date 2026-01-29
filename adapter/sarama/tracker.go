@@ -47,6 +47,11 @@ func NewResilienceTracker(cfg *resilience.Config, client sarama.Client, opts ...
 		)
 	}
 
+	backoff := options.backoff
+	if backoff == nil {
+		backoff = resilience.NewExponentialBackoff()
+	}
+
 	return resilience.NewErrorTracker(
 		cfg,
 		options.logger,
@@ -54,7 +59,7 @@ func NewResilienceTracker(cfg *resilience.Config, client sarama.Client, opts ...
 		consumerFactory,
 		adminAdapter,
 		coordinator,
-		options.backoff,
+		backoff,
 	)
 }
 

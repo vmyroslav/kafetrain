@@ -392,20 +392,15 @@ func (h *adapterTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 		err := h.processor.process(session.Context(), msg)
 
 		if err != nil {
-			// Check if it's a retriable error
-			if retryErr, ok := err.(resilience.RetriableError); ok && retryErr.ShouldRetry() {
-				// Use library-agnostic Redirect API
-				if redirectErr := h.tracker.Redirect(session.Context(), retryMsg, err); redirectErr != nil {
-					h.logger.Error("failed to redirect message", "error", redirectErr)
-					return redirectErr
-				}
-				h.logger.Info("message redirected to retry",
-					"payload", string(msg.Value),
-				)
-			} else {
-				h.logger.Error("non-retriable error", "error", err)
-				return err
+			// Redirect all errors - the library handles NotRetriableError internally
+			// (sends directly to DLQ instead of retry topic)
+			if redirectErr := h.tracker.Redirect(session.Context(), retryMsg, err); redirectErr != nil {
+				h.logger.Error("failed to redirect message", "error", redirectErr)
+				return redirectErr
 			}
+			h.logger.Info("message redirected",
+				"payload", string(msg.Value),
+			)
 		} else {
 			// Success - free from retry chain if it was in retry
 			if h.tracker.IsInRetryChain(session.Context(), retryMsg) {
@@ -448,10 +443,7 @@ func (p *testMessageProcessor) process(ctx context.Context, msg *sarama.Consumer
 		)
 
 		if attempt <= 2 {
-			return resilience.RetriableError{
-				Retry:  true,
-				Origin: fmt.Errorf("simulated failure for first message (attempt %d)", attempt),
-			}
+			return fmt.Errorf("simulated failure for first message (attempt %d)", attempt)
 		}
 
 		// Success path
@@ -468,10 +460,7 @@ func (p *testMessageProcessor) process(ctx context.Context, msg *sarama.Consumer
 		)
 
 		if attempt == 1 {
-			return resilience.RetriableError{
-				Retry:  true,
-				Origin: fmt.Errorf("simulated failure for second message (attempt %d)", attempt),
-			}
+			return fmt.Errorf("simulated failure for second message (attempt %d)", attempt)
 		}
 
 		// Success path
@@ -702,10 +691,7 @@ func (h *chainRetryHandler) ConsumeClaim(session sarama.ConsumerGroupSession, cl
 
 		// Fail first 2 attempts, succeed on 3rd
 		if attempt <= 2 {
-			err := resilience.RetriableError{
-				Retry:  true,
-				Origin: fmt.Errorf("simulated failure (attempt %d)", attempt),
-			}
+			err := fmt.Errorf("simulated failure (attempt %d)", attempt)
 
 			if redirectErr := h.tracker.Redirect(session.Context(), retryMsg, err); redirectErr != nil {
 				h.logger.Error("failed to redirect message", "error", redirectErr)
@@ -1023,10 +1009,7 @@ func (h *dlqTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim
 				"retry_attempt", currentAttempt,
 			)
 
-			err := resilience.RetriableError{
-				Retry:  true,
-				Origin: fmt.Errorf("simulated permanent failure (attempt %d)", attempt),
-			}
+			err := fmt.Errorf("simulated permanent failure (attempt %d)", attempt)
 
 			if redirectErr := h.tracker.Redirect(session.Context(), retryMsg, err); redirectErr != nil {
 				h.logger.Error("failed to redirect message", "error", redirectErr)
@@ -1310,10 +1293,7 @@ func (h *dlqFreeTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 				"retry_attempt", currentAttempt,
 			)
 
-			err := resilience.RetriableError{
-				Retry:  true,
-				Origin: fmt.Errorf("simulated failure (attempt %d)", attempt),
-			}
+			err := fmt.Errorf("simulated failure (attempt %d)", attempt)
 
 			if redirectErr := h.tracker.Redirect(session.Context(), retryMsg, err); redirectErr != nil {
 				h.logger.Error("failed to redirect message", "error", redirectErr)
