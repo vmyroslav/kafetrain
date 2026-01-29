@@ -136,9 +136,17 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string, handler Consumer
 
 // Close gracefully shuts down all background workers and releases resources.
 // It cancels all topic-specific contexts, waits for retry workers to complete,
-// and closes the coordinator. After Close returns, the ErrorTracker should not
-// be used. This method blocks until all goroutines exit cleanly.
-func (t *ErrorTracker) Close() error {
+// and closes the coordinator. After Close returns, the ErrorTracker should not be used.
+//
+// The context controls the shutdown timeout. Use context.WithTimeout to limit how long
+// Close will wait for workers to exit:
+//
+//	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+//	defer cancel()
+//	if err := tracker.Close(ctx); err != nil {
+//	    log.Warn("shutdown timeout, some workers may still be running")
+//	}
+func (t *ErrorTracker) Close(ctx context.Context) error {
 	t.mu.Lock()
 
 	for _, cancel := range t.cancels {
@@ -149,10 +157,19 @@ func (t *ErrorTracker) Close() error {
 	t.startedTopics = make(map[string]struct{})
 	t.mu.Unlock()
 
-	// Wait for all background workers to finish
-	t.wg.Wait()
+	// Wait for all background workers with timeout
+	done := make(chan struct{})
+	go func() {
+		t.wg.Wait()
+		close(done)
+	}()
 
-	return t.coordinator.Close()
+	select {
+	case <-done:
+		return t.coordinator.Close(ctx)
+	case <-ctx.Done():
+		return fmt.Errorf("shutdown timeout waiting for workers: %w", ctx.Err())
+	}
 }
 
 // ensureTopicsExist creates retry and DLQ topics if they don't exist.

@@ -35,7 +35,9 @@ type StateCoordinator interface {
 	Synchronize(ctx context.Context) error
 
 	// Close cleans up resources managed by the coordinator (e.g., stops background consumers).
-	Close() error
+	// The context controls the shutdown timeout - if context expires, Close returns immediately
+	// with an error, potentially leaving goroutines running.
+	Close(ctx context.Context) error
 }
 
 // Producer publishes messages to Kafka topics.

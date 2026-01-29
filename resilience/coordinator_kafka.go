@@ -350,10 +350,10 @@ func isCaughtUpOffsets(consumedOffsets, targetOffsets map[int32]int64) bool {
 	return true
 }
 
-// Close gracefully shuts down the coordinator by stopping background workers
-// and waiting for them to complete.
-// This method cancels the background redirect consumer and blocks until it exits.
-func (k *KafkaStateCoordinator) Close() error {
+// Close gracefully shuts down the coordinator by stopping background workers.
+// The context controls the shutdown timeout - if it expires before workers exit,
+// Close returns an error but the coordinator may have goroutines still running.
+func (k *KafkaStateCoordinator) Close(ctx context.Context) error {
 	k.mu.Lock()
 
 	if k.cancel != nil {
@@ -362,9 +362,19 @@ func (k *KafkaStateCoordinator) Close() error {
 
 	k.mu.Unlock()
 
-	k.wg.Wait()
+	// Wait for workers with timeout
+	done := make(chan struct{})
+	go func() {
+		k.wg.Wait()
+		close(done)
+	}()
 
-	return nil
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("coordinator shutdown timeout: %w", ctx.Err())
+	}
 }
 
 // ensureRedirectTopic creates the compacted redirect topic if it doesn't exist.

@@ -78,8 +78,8 @@ func (l *LocalStateCoordinator) Synchronize(_ context.Context) error {
 	return nil
 }
 
-// Close is a no-op for LocalStateCoordinator.
-func (l *LocalStateCoordinator) Close() error {
+// Close is a no-op for LocalStateCoordinator (no background workers to stop).
+func (l *LocalStateCoordinator) Close(_ context.Context) error {
 	return nil
 }
 
