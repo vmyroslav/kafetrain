@@ -279,11 +279,11 @@ func TestErrorTracker_NotRetriableError_PreservesOriginalError(t *testing.T) {
 	assert.Equal(t, originalErr, wrappedErr.Unwrap())
 
 	// errors.Is should work through the wrapper
-	assert.ErrorIs(t, wrappedErr, originalErr)
+	require.ErrorIs(t, wrappedErr, originalErr)
 
 	// errors.As should find NotRetriableError
 	var notRetriable *NotRetriableError
-	assert.ErrorAs(t, wrappedErr, &notRetriable)
+	require.ErrorAs(t, wrappedErr, &notRetriable)
 	assert.Equal(t, originalErr, notRetriable.Origin)
 }
 

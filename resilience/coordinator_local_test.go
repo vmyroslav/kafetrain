@@ -129,8 +129,9 @@ func TestLocalStateCoordinator_Release_WithHeader(t *testing.T) {
 
 	// release using a message with explicit HeaderTopic (simulating redirect message)
 	releaseMsg := &InternalMessage{
-		topic:   "redirect_orders", // different topic
-		KeyData: []byte("key1"),
+		topic:      "redirect_orders", // different topic
+		KeyData:    []byte("key1"),
+		HeaderData: &HeaderList{},
 	}
 	releaseMsg.HeaderData.Set(HeaderTopic, []byte("orders"))
 

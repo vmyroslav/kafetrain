@@ -81,7 +81,7 @@ type InternalMessage struct {
 	topic         string
 	KeyData       []byte
 	Payload       []byte
-	HeaderData    HeaderList
+	HeaderData    *HeaderList
 	partition     int32
 	offset        int64
 }
@@ -94,6 +94,7 @@ func NewFromMessage(msg Message) *InternalMessage {
 		KeyData:       msg.Key(),
 		Payload:       msg.Value(),
 		TimestampData: msg.Timestamp(),
+		HeaderData:    &HeaderList{},
 	}
 
 	msg.Headers().Range(func(key string, value []byte) bool {
@@ -149,9 +150,13 @@ func (m *InternalMessage) Timestamp() time.Time {
 	return m.TimestampData
 }
 
-// Headers returns the message headers.
+// Headers returns the message headers, initializing the HeaderData if nil.
 func (m *InternalMessage) Headers() Headers {
-	return &m.HeaderData
+	if m.HeaderData == nil {
+		m.HeaderData = &HeaderList{}
+	}
+
+	return m.HeaderData
 }
 
 type Header struct {
@@ -252,8 +257,12 @@ func (h *HeaderList) Range(fn func(key string, value []byte) bool) {
 }
 
 func GetHeaderValue[T any](h *HeaderList, key string) (T, bool) {
+	var zero T
+	if h == nil {
+		return zero, false
+	}
+
 	var (
-		zero  T
 		val   []byte
 		found bool
 	)
@@ -296,7 +305,12 @@ func GetHeaderValue[T any](h *HeaderList, key string) (T, bool) {
 
 // SetHeader updates or adds a header with the given key and value.
 // Supported types: string, int, time.Time. Returns an error if an unsupported type is provided.
+// If h is nil, this is a no-op and returns nil.
 func SetHeader[T any](h *HeaderList, key string, value T) error {
+	if h == nil {
+		return nil
+	}
+
 	var valStr string
 
 	// convert T to string based on its type

@@ -42,8 +42,9 @@ func TestKafkaStateCoordinator_Acquire(t *testing.T) {
 
 	ctx := t.Context()
 	msg := &InternalMessage{
-		topic:   "orders",
-		KeyData: []byte("order-123"),
+		topic:      "orders",
+		KeyData:    []byte("order-123"),
+		HeaderData: &HeaderList{},
 	}
 	msg.HeaderData.Set("custom", []byte("val"))
 
@@ -140,9 +141,10 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 			// Simulate reading a lock message from redirect topic
 			// NO CoordinatorID header -> simulates legacy message or other instance
 			msg := &InternalMessage{
-				topic:   "redirect_orders",
-				KeyData: []byte("order-locked"),
-				Payload: []byte("order-locked"),
+				topic:      "redirect_orders",
+				KeyData:    []byte("order-locked"),
+				Payload:    []byte("order-locked"),
+				HeaderData: &HeaderList{},
 			}
 			msg.HeaderData.Set("topic", []byte("orders"))
 			msg.HeaderData.Set("key", []byte("order-locked"))
@@ -241,9 +243,10 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 
 	// 1. Simulate "Echo" message (Same ID)
 	echoMsg := &InternalMessage{
-		topic:   "redirect_orders",
-		KeyData: []byte("k1"),
-		Payload: []byte("k1"),
+		topic:      "redirect_orders",
+		KeyData:    []byte("k1"),
+		Payload:    []byte("k1"),
+		HeaderData: &HeaderList{},
 	}
 	echoMsg.HeaderData.Set(HeaderCoordinatorID, []byte(coordinator.instanceID))
 	echoMsg.HeaderData.Set(HeaderTopic, []byte("orders"))
@@ -262,9 +265,10 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 
 	// 2. Simulate "Foreign" message (Different ID)
 	foreignMsg := &InternalMessage{
-		topic:   "redirect_orders",
-		KeyData: []byte("k1"),
-		Payload: []byte("k1"),
+		topic:      "redirect_orders",
+		KeyData:    []byte("k1"),
+		Payload:    []byte("k1"),
+		HeaderData: &HeaderList{},
 	}
 	foreignMsg.HeaderData.Set(HeaderCoordinatorID, []byte("other-uuid"))
 	foreignMsg.HeaderData.Set(HeaderTopic, []byte("orders"))
@@ -335,9 +339,10 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 		ConsumeFunc: func(ctx context.Context, _ []string, handler ConsumerHandler) error {
 			// Simulate the existing lock message on the topic
 			msg := &InternalMessage{
-				topic:   "redirect_orders",
-				KeyData: []byte(key),
-				Payload: []byte(key), // Payload exists = Locked
+				topic:      "redirect_orders",
+				KeyData:    []byte(key),
+				Payload:    []byte(key), // Payload exists = Locked
+				HeaderData: &HeaderList{},
 			}
 			msg.HeaderData.Set(HeaderTopic, []byte(topic))
 			msg.HeaderData.Set(HeaderKey, []byte(key))
@@ -602,7 +607,7 @@ func createMockRedirectMsg(topic, key, coordinatorID string, isLock bool) *Inter
 		value = nil
 	}
 
-	hl := HeaderList{}
+	hl := &HeaderList{}
 	hl.Set(HeaderCoordinatorID, []byte(coordinatorID))
 	hl.Set(HeaderTopic, []byte(topic))
 	hl.Set("key", []byte(key))
