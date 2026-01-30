@@ -159,6 +159,7 @@ func (t *ErrorTracker) Close(ctx context.Context) error {
 
 	// Wait for all background workers with timeout
 	done := make(chan struct{})
+
 	go func() {
 		t.wg.Wait()
 		close(done)
@@ -434,6 +435,7 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 			"key", string(msg.KeyData),
 			"error", lastError,
 		)
+
 		return t.SendToDLQ(ctx, msg, lastError)
 	}
 

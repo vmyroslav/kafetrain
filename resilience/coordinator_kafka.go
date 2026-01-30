@@ -124,7 +124,7 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, msg *InternalMessag
 	// Ensure the ID is in the headers (it should be there via SetHeader above, but being explicit)
 	redirectHeaders.Set(HeaderID, []byte(id))
 
-	//TODO: Highlight the payload info
+	// TODO: Highlight the payload info
 	redirectMsg := &InternalMessage{
 		topic:         k.redirectTopic(originalTopic),
 		KeyData:       []byte(id), // Use the unique ID as the Kafka Key to prevent compaction merging
@@ -364,6 +364,7 @@ func (k *KafkaStateCoordinator) Close(ctx context.Context) error {
 
 	// Wait for workers with timeout
 	done := make(chan struct{})
+
 	go func() {
 		k.wg.Wait()
 		close(done)
@@ -412,7 +413,7 @@ func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic s
 	// Lower values = faster tombstone propagation, higher CPU usage.
 	return k.admin.CreateTopic(ctx, redirectTopic, partitions, k.cfg.ReplicationFactor, map[string]string{
 		"cleanup.policy": "compact",
-		"segment.ms":     "100", //TODO: make configurable?
+		"segment.ms":     "100", // TODO: make configurable?
 	})
 }
 

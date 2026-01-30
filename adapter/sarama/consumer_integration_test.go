@@ -23,19 +23,12 @@ func TestIntegration_SaramaConsumer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	broker, cleanup := setupKafkaContainer(t, ctx)
-	defer cleanup()
+	topic, groupID := newTestIDs("test-consumer")
 
-	topic := fmt.Sprintf("test-consumer-%d", time.Now().UnixNano())
-	groupID := fmt.Sprintf("test-group-%d", time.Now().UnixNano())
-
-	// create Topic
-	config := sarama.NewConfig()
-	config.Version = sarama.V4_1_0_0
-	config.Consumer.Offsets.Initial = sarama.OffsetOldest
-	admin, err := sarama.NewClusterAdmin([]string{broker}, config)
+	// Create topic
+	admin, err := sarama.NewClusterAdmin([]string{sharedBroker}, newTestSaramaConfig())
 	require.NoError(t, err)
-	defer admin.Close()
+	t.Cleanup(func() { _ = admin.Close() })
 
 	err = admin.CreateTopic(topic, &sarama.TopicDetail{
 		NumPartitions:     1,
@@ -43,18 +36,14 @@ func TestIntegration_SaramaConsumer(t *testing.T) {
 	}, false)
 	require.NoError(t, err)
 
-	// produce Message
-	produceTestMessage(t, broker, topic, "key-1", "value-1")
+	produceTestMessage(t, sharedBroker, topic, "key-1", "value-1")
 
-	// create Consumer
-	client, err := sarama.NewClient([]string{broker}, config)
-	require.NoError(t, err)
-	defer client.Close()
-
+	// Create consumer
+	client := newTestClient(t)
 	factory := saramaadapter.NewConsumerFactory(client)
 	consumer, err := factory.NewConsumer(groupID)
 	require.NoError(t, err)
-	defer consumer.Close()
+	t.Cleanup(func() { _ = consumer.Close() })
 
 	handler := &integrationConsumerHandler{
 		received: make(chan resilience.Message, 1),
@@ -91,21 +80,12 @@ func TestIntegration_SaramaConsumerRebalance(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	broker, cleanup := setupKafkaContainer(t, ctx)
-	defer cleanup()
+	topic, groupID := newTestIDs("test-rebalance")
 
-	topic := fmt.Sprintf("test-rebalance-%d", time.Now().UnixNano())
-	groupID := fmt.Sprintf("test-rebalance-group-%d", time.Now().UnixNano())
-
-	// create topic with 2 partitions to facilitate rebalancing
-	config := sarama.NewConfig()
-	config.Version = sarama.V4_1_0_0
-	config.Consumer.Offsets.Initial = sarama.OffsetOldest
-	config.Consumer.Group.Rebalance.GroupStrategies = []sarama.BalanceStrategy{sarama.NewBalanceStrategyRoundRobin()}
-
-	admin, err := sarama.NewClusterAdmin([]string{broker}, config)
+	// Create topic with 2 partitions to facilitate rebalancing
+	admin, err := sarama.NewClusterAdmin([]string{sharedBroker}, newTestSaramaConfig())
 	require.NoError(t, err)
-	defer admin.Close()
+	t.Cleanup(func() { _ = admin.Close() })
 
 	err = admin.CreateTopic(topic, &sarama.TopicDetail{
 		NumPartitions:     2,
@@ -113,30 +93,22 @@ func TestIntegration_SaramaConsumerRebalance(t *testing.T) {
 	}, false)
 	require.NoError(t, err)
 
-	// create Consumer 1
-	client1, err := sarama.NewClient([]string{broker}, config)
-	require.NoError(t, err)
-	defer client1.Close()
-
+	// Create Consumer 1
+	client1 := newTestClient(t)
 	factory1 := saramaadapter.NewConsumerFactory(client1)
 	consumer1, err := factory1.NewConsumer(groupID)
 	require.NoError(t, err)
-	defer consumer1.Close()
+	t.Cleanup(func() { _ = consumer1.Close() })
 
-	handler1 := &integrationConsumerHandler{
-		received: make(chan resilience.Message, 100),
-	}
-
+	handler1 := &integrationConsumerHandler{received: make(chan resilience.Message, 100)}
 	consumeCtx1, consumeCancel1 := context.WithCancel(ctx)
-	defer consumeCancel1()
+	t.Cleanup(consumeCancel1)
 
 	done1 := make(chan error, 1)
-	go func() {
-		done1 <- consumer1.Consume(consumeCtx1, []string{topic}, handler1)
-	}()
+	go func() { done1 <- consumer1.Consume(consumeCtx1, []string{topic}, handler1) }()
 
-	// produce initial message and verify Consumer 1 receives it
-	produceTestMessage(t, broker, topic, "key-1", "value-1")
+	// Produce initial message and verify Consumer 1 receives it
+	produceTestMessage(t, sharedBroker, topic, "key-1", "value-1")
 	select {
 	case msg := <-handler1.received:
 		assert.Equal(t, "value-1", string(msg.Value()))
@@ -144,27 +116,19 @@ func TestIntegration_SaramaConsumerRebalance(t *testing.T) {
 		t.Fatal("timed out waiting for message 1")
 	}
 
-	// create Consumer 2 in the same group to trigger rebalance
-	client2, err := sarama.NewClient([]string{broker}, config)
-	require.NoError(t, err)
-	defer client2.Close()
-
+	// Create Consumer 2 in the same group to trigger rebalance
+	client2 := newTestClient(t)
 	factory2 := saramaadapter.NewConsumerFactory(client2)
 	consumer2, err := factory2.NewConsumer(groupID)
 	require.NoError(t, err)
-	defer consumer2.Close()
+	t.Cleanup(func() { _ = consumer2.Close() })
 
-	handler2 := &integrationConsumerHandler{
-		received: make(chan resilience.Message, 100),
-	}
-
+	handler2 := &integrationConsumerHandler{received: make(chan resilience.Message, 100)}
 	consumeCtx2, consumeCancel2 := context.WithCancel(ctx)
-	defer consumeCancel2()
+	t.Cleanup(consumeCancel2)
 
 	done2 := make(chan error, 1)
-	go func() {
-		done2 <- consumer2.Consume(consumeCtx2, []string{topic}, handler2)
-	}()
+	go func() { done2 <- consumer2.Consume(consumeCtx2, []string{topic}, handler2) }()
 
 	// Continuously produce messages until we confirm both consumers are active.
 	// This confirms that rebalance has completed and partitions are distributed.
@@ -174,20 +138,17 @@ func TestIntegration_SaramaConsumerRebalance(t *testing.T) {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	// Drain any previous messages first to avoid confusion
 loop:
 	for {
 		select {
 		case <-handler1.received:
-			// Drain existing
 		case <-handler2.received:
-			// Drain existing
 		case <-timeout:
 			t.Fatalf("timed out waiting for rebalance. Stats - C1: %d, C2: %d",
 				handler1.count.Load(), handler2.count.Load())
 		case <-ticker.C:
 			messagesSent++
-			produceTestMessage(t, broker, topic,
+			produceTestMessage(t, sharedBroker, topic,
 				fmt.Sprintf("poll-%d", messagesSent),
 				fmt.Sprintf("value-%d", messagesSent))
 

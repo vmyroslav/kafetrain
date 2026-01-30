@@ -15,60 +15,9 @@ import (
 	"github.com/IBM/sarama"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go/modules/kafka"
 	saramaadapter "github.com/vmyroslav/kafka-resilience/adapter/sarama"
 	"github.com/vmyroslav/kafka-resilience/resilience"
 )
-
-// setupKafkaContainer starts a Kafka container and returns the broker address.
-func setupKafkaContainer(t *testing.T, ctx context.Context) (string, func()) {
-	t.Helper()
-
-	// Use shared container if available (started by TestMain)
-	if sharedBroker != "" {
-		return sharedBroker, func() {}
-	}
-
-	kafkaContainer, err := kafka.Run(ctx,
-		"confluentinc/confluent-local:7.6.0",
-		kafka.WithClusterID("test-cluster"),
-	)
-	require.NoError(t, err, "failed to start Kafka container")
-
-	brokers, err := kafkaContainer.Brokers(ctx)
-	require.NoError(t, err, "failed to get Kafka brokers")
-
-	cleanup := func() {
-		if err := kafkaContainer.Terminate(ctx); err != nil {
-			t.Logf("failed to terminate Kafka container: %v", err)
-		}
-	}
-
-	return brokers[0], cleanup
-}
-
-// setupIsolatedKafkaContainer starts a new, isolated Kafka container and returns the broker address and the container instance.
-// Use this for tests that need to control the container lifecycle (e.g. stop/start/restart).
-func setupIsolatedKafkaContainer(t *testing.T, ctx context.Context) (string, *kafka.KafkaContainer, func()) {
-	t.Helper()
-
-	kafkaContainer, err := kafka.Run(ctx,
-		"confluentinc/confluent-local:7.6.0",
-		kafka.WithClusterID("test-cluster"),
-	)
-	require.NoError(t, err, "failed to start isolated Kafka container")
-
-	brokers, err := kafkaContainer.Brokers(ctx)
-	require.NoError(t, err, "failed to get Kafka brokers")
-
-	cleanup := func() {
-		if err := kafkaContainer.Terminate(ctx); err != nil {
-			t.Logf("failed to terminate isolated Kafka container: %v", err)
-		}
-	}
-
-	return brokers[0], kafkaContainer, cleanup
-}
 
 // TestIntegration_SaramaAdmin tests the Sarama Admin adapter implementation.
 // Verifies that the Admin interface correctly creates topics and manages consumer groups.
@@ -76,21 +25,10 @@ func TestIntegration_SaramaAdmin(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 
-	broker, cleanup := setupKafkaContainer(t, ctx)
-	defer cleanup()
-
-	// Create Sarama client
-	saramaConfig := sarama.NewConfig()
-	saramaConfig.Version = sarama.V4_1_0_0
-
-	client, err := sarama.NewClient([]string{broker}, saramaConfig)
-	require.NoError(t, err, "failed to create Sarama client")
-	defer client.Close()
-
-	// Create admin adapter
+	client := newTestClient(t)
 	admin, err := saramaadapter.NewAdminAdapter(client)
 	require.NoError(t, err, "failed to create admin adapter")
-	defer admin.Close()
+	t.Cleanup(func() { _ = admin.Close() })
 
 	// Test 1: Create topics
 	t.Run("CreateTopics", func(t *testing.T) {
@@ -156,11 +94,7 @@ func TestIntegration_SaramaAdmin(t *testing.T) {
 		require.NoError(t, err, "failed to create topic")
 
 		// Create a consumer group by consuming
-		consumerConfig := sarama.NewConfig()
-		consumerConfig.Version = sarama.V4_1_0_0
-		consumerConfig.Consumer.Return.Errors = true
-
-		consumer, err := sarama.NewConsumerGroup([]string{broker}, groupID, consumerConfig)
+		consumer, err := sarama.NewConsumerGroup([]string{sharedBroker}, groupID, newTestSaramaConfig())
 		require.NoError(t, err, "failed to create consumer group")
 
 		// Consume briefly to establish the group
@@ -190,11 +124,9 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	broker, cleanup := setupKafkaContainer(t, ctx)
-	defer cleanup()
-
-	topic := fmt.Sprintf("test-adapter-%d", time.Now().UnixNano())
-	groupID := fmt.Sprintf("test-adapter-group-%d", time.Now().UnixNano())
+	client := newTestClient(t)
+	adapters := newTestAdapters(t, client)
+	topic, groupID := newTestIDs("test-adapter")
 
 	// Track processing
 	var (
@@ -205,63 +137,19 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 		processedMsgs  []string
 	)
 
-	// Setup Sarama client
-	saramaConfig := sarama.NewConfig()
-	saramaConfig.Version = sarama.V4_1_0_0
-	saramaConfig.Consumer.Return.Errors = true
-	saramaConfig.Consumer.Group.Rebalance.Strategy = sarama.NewBalanceStrategyRoundRobin()
-	saramaConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
-	saramaConfig.Producer.Return.Successes = true
-
-	client, err := sarama.NewClient([]string{broker}, saramaConfig)
-	require.NoError(t, err, "failed to create Sarama client")
-	defer client.Close()
-
-	// Create Sarama producer and wrap with adapter
-	saramaProducer, err := sarama.NewSyncProducerFromClient(client)
-	require.NoError(t, err, "failed to create Sarama producer")
-	defer saramaProducer.Close()
-
-	producer := saramaadapter.NewProducerAdapter(saramaProducer)
-
-	// Create consumer factory
-	consumerFactory := saramaadapter.NewConsumerFactory(client)
-
-	// Create admin adapter
-	admin, err := saramaadapter.NewAdminAdapter(client)
-	require.NoError(t, err, "failed to create admin adapter")
-	defer admin.Close()
-
-	// Create logger adapter
-	retryLogger := SharedLogger
-
-	// Create config
 	cfg := resilience.NewDefaultConfig()
 	cfg.GroupID = groupID
 	cfg.MaxRetries = 3
 	cfg.RetryTopicPartitions = 1
 
-	// Create library-agnostic ErrorTracker
-	// Create coordinator
-	errCh := make(chan error, 10)
 	coordinator := resilience.NewKafkaStateCoordinator(
-		cfg,
-		retryLogger,
-		producer,
-		consumerFactory,
-		admin,
-		errCh,
+		cfg, SharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
+		make(chan error, 10),
 	)
 
-	// Create library-agnostic ErrorTracker
 	tracker, err := resilience.NewErrorTracker(
-		cfg,
-		retryLogger,
-		producer,
-		consumerFactory,
-		admin,
-		coordinator,
-		resilience.NewExponentialBackoff(),
+		cfg, SharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
+		coordinator, resilience.NewExponentialBackoff(),
 	)
 	require.NoError(t, err, "failed to create error tracker")
 
@@ -287,12 +175,12 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 	// Create main consumer (using standard Sarama)
 	mainConsumer, err := sarama.NewConsumerGroupFromClient(groupID, client)
 	require.NoError(t, err, "failed to create main consumer")
-	defer mainConsumer.Close()
+	t.Cleanup(func() { _ = mainConsumer.Close() })
 
 	// Create retry consumer
 	retryConsumer, err := sarama.NewConsumerGroupFromClient(groupID+"-retry", client)
 	require.NoError(t, err, "failed to create retry consumer")
-	defer retryConsumer.Close()
+	t.Cleanup(func() { _ = retryConsumer.Close() })
 
 	// Create handler that uses library-agnostic tracker
 	handler := &adapterTestHandler{
@@ -339,9 +227,9 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 	time.Sleep(2 * time.Second)
 
 	// Produce test messages
-	produceTestMessage(t, broker, topic, "test-key", "first-will-fail-twice")
-	produceTestMessage(t, broker, topic, "test-key", "second-will-fail-once")
-	produceTestMessage(t, broker, topic, "test-key", "third-will-succeed")
+	produceTestMessage(t, sharedBroker, topic, "test-key", "first-will-fail-twice")
+	produceTestMessage(t, sharedBroker, topic, "test-key", "second-will-fail-once")
+	produceTestMessage(t, sharedBroker, topic, "test-key", "third-will-succeed")
 
 	// Wait for processing to complete
 	assert.Eventually(t, func() bool {
@@ -505,11 +393,9 @@ func TestIntegration_ChainRetry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	broker, cleanup := setupKafkaContainer(t, ctx)
-	defer cleanup()
-
-	topic := fmt.Sprintf("test-chain-retry-%d", time.Now().UnixNano())
-	groupID := fmt.Sprintf("test-chain-retry-group-%d", time.Now().UnixNano())
+	client := newTestClient(t)
+	adapters := newTestAdapters(t, client)
+	topic, groupID := newTestIDs("test-chain-retry")
 
 	// Track attempts
 	var (
@@ -518,58 +404,19 @@ func TestIntegration_ChainRetry(t *testing.T) {
 		success  bool
 	)
 
-	// Setup Sarama client
-	saramaConfig := sarama.NewConfig()
-	saramaConfig.Version = sarama.V4_1_0_0
-	saramaConfig.Consumer.Return.Errors = true
-	saramaConfig.Consumer.Group.Rebalance.Strategy = sarama.NewBalanceStrategyRoundRobin()
-	saramaConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
-	saramaConfig.Producer.Return.Successes = true
-
-	client, err := sarama.NewClient([]string{broker}, saramaConfig)
-	require.NoError(t, err, "failed to create Sarama client")
-	defer client.Close()
-
-	// Create adapters
-	saramaProducer, err := sarama.NewSyncProducerFromClient(client)
-	require.NoError(t, err, "failed to create Sarama producer")
-	defer saramaProducer.Close()
-
-	producer := saramaadapter.NewProducerAdapter(saramaProducer)
-	consumerFactory := saramaadapter.NewConsumerFactory(client)
-	admin, err := saramaadapter.NewAdminAdapter(client)
-	require.NoError(t, err, "failed to create admin adapter")
-	defer admin.Close()
-
-	retryLogger := SharedLogger
-
-	// Create config with 3 max retries
 	cfg := resilience.NewDefaultConfig()
 	cfg.GroupID = groupID
 	cfg.MaxRetries = 3
 	cfg.RetryTopicPartitions = 1
 
-	// Create ErrorTracker
-	// Create coordinator
-	errCh := make(chan error, 10)
 	coordinator := resilience.NewKafkaStateCoordinator(
-		cfg,
-		retryLogger,
-		producer,
-		consumerFactory,
-		admin,
-		errCh,
+		cfg, SharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
+		make(chan error, 10),
 	)
 
-	// Create library-agnostic ErrorTracker
 	tracker, err := resilience.NewErrorTracker(
-		cfg,
-		retryLogger,
-		producer,
-		consumerFactory,
-		admin,
-		coordinator,
-		resilience.NewExponentialBackoff(),
+		cfg, SharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
+		coordinator, resilience.NewExponentialBackoff(),
 	)
 	require.NoError(t, err, "failed to create error tracker")
 
@@ -598,52 +445,26 @@ func TestIntegration_ChainRetry(t *testing.T) {
 	// Create main consumer
 	mainConsumer, err := sarama.NewConsumerGroupFromClient(groupID, client)
 	require.NoError(t, err, "failed to create main consumer")
-	defer mainConsumer.Close()
+	t.Cleanup(func() { _ = mainConsumer.Close() })
 
 	// Create retry consumer
 	retryConsumer, err := sarama.NewConsumerGroupFromClient(groupID+"-retry", client)
 	require.NoError(t, err, "failed to create retry consumer")
-	defer retryConsumer.Close()
+	t.Cleanup(func() { _ = retryConsumer.Close() })
 
 	// Start consumption
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()
 
 	var wg sync.WaitGroup
-
-	// Start main consumer
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			if err := mainConsumer.Consume(consumerCtx, []string{topic}, handler); err != nil {
-				SharedLogger.Error("main consumer error", "error", err)
-			}
-			if consumerCtx.Err() != nil {
-				return
-			}
-		}
-	}()
-
-	// Start retry consumer
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			if err := retryConsumer.Consume(consumerCtx, []string{retryTopic}, handler); err != nil {
-				SharedLogger.Error("retry consumer error", "error", err)
-			}
-			if consumerCtx.Err() != nil {
-				return
-			}
-		}
-	}()
+	runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, SharedLogger)
+	runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, SharedLogger)
 
 	// Wait for consumers to be ready
 	time.Sleep(2 * time.Second)
 
 	// Produce test message
-	produceTestMessage(t, broker, topic, "test-key", "will-fail-twice-then-succeed")
+	produceTestMessage(t, sharedBroker, topic, "test-key", "will-fail-twice-then-succeed")
 
 	// Wait for processing to complete (3 attempts total)
 	assert.Eventually(t, func() bool {
@@ -736,11 +557,9 @@ func TestIntegration_DLQ(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	broker, cleanup := setupKafkaContainer(t, ctx)
-	defer cleanup()
-
-	topic := fmt.Sprintf("test-dlq-%d", time.Now().UnixNano())
-	groupID := fmt.Sprintf("test-dlq-group-%d", time.Now().UnixNano())
+	client := newTestClient(t)
+	adapters := newTestAdapters(t, client)
+	topic, groupID := newTestIDs("test-dlq")
 
 	// Track attempts and DLQ
 	var (
@@ -750,59 +569,20 @@ func TestIntegration_DLQ(t *testing.T) {
 		dlqHeaders  map[string]string
 	)
 
-	// Setup Sarama client
-	saramaConfig := sarama.NewConfig()
-	saramaConfig.Version = sarama.V4_1_0_0
-	saramaConfig.Consumer.Return.Errors = true
-	saramaConfig.Consumer.Group.Rebalance.Strategy = sarama.NewBalanceStrategyRoundRobin()
-	saramaConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
-	saramaConfig.Producer.Return.Successes = true
-
-	client, err := sarama.NewClient([]string{broker}, saramaConfig)
-	require.NoError(t, err, "failed to create Sarama client")
-	defer client.Close()
-
-	// Create adapters
-	saramaProducer, err := sarama.NewSyncProducerFromClient(client)
-	require.NoError(t, err, "failed to create Sarama producer")
-	defer saramaProducer.Close()
-
-	producer := saramaadapter.NewProducerAdapter(saramaProducer)
-	consumerFactory := saramaadapter.NewConsumerFactory(client)
-	admin, err := saramaadapter.NewAdminAdapter(client)
-	require.NoError(t, err, "failed to create admin adapter")
-	defer admin.Close()
-
-	retryLogger := SharedLogger
-
-	// Create config with MaxRetries=3, FreeOnDLQ=false (default)
 	cfg := resilience.NewDefaultConfig()
 	cfg.GroupID = groupID
 	cfg.MaxRetries = 3
 	cfg.RetryTopicPartitions = 1
-	cfg.FreeOnDLQ = false // Message stays in tracking after DLQ
+	cfg.FreeOnDLQ = false
 
-	// Create ErrorTracker
-	// Create coordinator
-	errCh := make(chan error, 10)
 	coordinator := resilience.NewKafkaStateCoordinator(
-		cfg,
-		retryLogger,
-		producer,
-		consumerFactory,
-		admin,
-		errCh,
+		cfg, SharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
+		make(chan error, 10),
 	)
 
-	// Create library-agnostic ErrorTracker
 	tracker, err := resilience.NewErrorTracker(
-		cfg,
-		retryLogger,
-		producer,
-		consumerFactory,
-		admin,
-		coordinator,
-		resilience.NewExponentialBackoff(),
+		cfg, SharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
+		coordinator, resilience.NewExponentialBackoff(),
 	)
 	require.NoError(t, err, "failed to create error tracker")
 
@@ -829,74 +609,33 @@ func TestIntegration_DLQ(t *testing.T) {
 		dlqHeaders:  &dlqHeaders,
 	}
 
-	// Create main consumer
+	// Create consumers
 	mainConsumer, err := sarama.NewConsumerGroupFromClient(groupID, client)
 	require.NoError(t, err, "failed to create main consumer")
-	defer mainConsumer.Close()
+	t.Cleanup(func() { _ = mainConsumer.Close() })
 
-	// Create retry consumer
 	retryConsumer, err := sarama.NewConsumerGroupFromClient(groupID+"-retry", client)
 	require.NoError(t, err, "failed to create retry consumer")
-	defer retryConsumer.Close()
+	t.Cleanup(func() { _ = retryConsumer.Close() })
 
-	// Create DLQ consumer
 	dlqConsumer, err := sarama.NewConsumerGroupFromClient(groupID+"-dlq", client)
 	require.NoError(t, err, "failed to create DLQ consumer")
-	defer dlqConsumer.Close()
+	t.Cleanup(func() { _ = dlqConsumer.Close() })
 
 	// Start consumption
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()
 
 	var wg sync.WaitGroup
-
-	// Start main consumer
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			if err := mainConsumer.Consume(consumerCtx, []string{topic}, handler); err != nil {
-				SharedLogger.Error("main consumer error", "error", err)
-			}
-			if consumerCtx.Err() != nil {
-				return
-			}
-		}
-	}()
-
-	// Start retry consumer
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			if err := retryConsumer.Consume(consumerCtx, []string{retryTopic}, handler); err != nil {
-				SharedLogger.Error("retry consumer error", "error", err)
-			}
-			if consumerCtx.Err() != nil {
-				return
-			}
-		}
-	}()
-
-	// Start DLQ consumer
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			if err := dlqConsumer.Consume(consumerCtx, []string{dlqTopic}, handler); err != nil {
-				SharedLogger.Error("DLQ consumer error", "error", err)
-			}
-			if consumerCtx.Err() != nil {
-				return
-			}
-		}
-	}()
+	runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, SharedLogger)
+	runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, SharedLogger)
+	runConsumerLoop(consumerCtx, &wg, dlqConsumer, []string{dlqTopic}, handler, SharedLogger)
 
 	// Wait for consumers to be ready
 	time.Sleep(2 * time.Second)
 
 	// Produce test message that will always fail
-	produceTestMessage(t, broker, topic, "test-key", "will-always-fail")
+	produceTestMessage(t, sharedBroker, topic, "test-key", "will-always-fail")
 
 	// Wait for message to exceed max retries and go to DLQ
 	// MaxRetries=3 means: 1 initial attempt + 3 retries = 4 total attempts
@@ -1041,11 +780,9 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	broker, cleanup := setupKafkaContainer(t, ctx)
-	defer cleanup()
-
-	topic := fmt.Sprintf("test-dlq-free-%d", time.Now().UnixNano())
-	groupID := fmt.Sprintf("test-dlq-free-group-%d", time.Now().UnixNano())
+	client := newTestClient(t)
+	adapters := newTestAdapters(t, client)
+	topic, groupID := newTestIDs("test-dlq-free")
 
 	// Track state
 	var (
@@ -1054,59 +791,20 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 		secondReceived atomic.Bool
 	)
 
-	// Setup Sarama client
-	saramaConfig := sarama.NewConfig()
-	saramaConfig.Version = sarama.V4_1_0_0
-	saramaConfig.Consumer.Return.Errors = true
-	saramaConfig.Consumer.Group.Rebalance.Strategy = sarama.NewBalanceStrategyRoundRobin()
-	saramaConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
-	saramaConfig.Producer.Return.Successes = true
-
-	client, err := sarama.NewClient([]string{broker}, saramaConfig)
-	require.NoError(t, err, "failed to create Sarama client")
-	defer client.Close()
-
-	// Create adapters
-	saramaProducer, err := sarama.NewSyncProducerFromClient(client)
-	require.NoError(t, err, "failed to create Sarama producer")
-	defer saramaProducer.Close()
-
-	producer := saramaadapter.NewProducerAdapter(saramaProducer)
-	consumerFactory := saramaadapter.NewConsumerFactory(client)
-	admin, err := saramaadapter.NewAdminAdapter(client)
-	require.NoError(t, err, "failed to create admin adapter")
-	defer admin.Close()
-
-	retryLogger := SharedLogger
-
-	// Create config with FreeOnDLQ=true
 	cfg := resilience.NewDefaultConfig()
 	cfg.GroupID = groupID
 	cfg.MaxRetries = 3
 	cfg.RetryTopicPartitions = 1
-	cfg.FreeOnDLQ = true // FREE message from tracking after DLQ
+	cfg.FreeOnDLQ = true
 
-	// Create ErrorTracker
-	// Create coordinator
-	errCh := make(chan error, 10)
 	coordinator := resilience.NewKafkaStateCoordinator(
-		cfg,
-		retryLogger,
-		producer,
-		consumerFactory,
-		admin,
-		errCh,
+		cfg, SharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
+		make(chan error, 10),
 	)
 
-	// Create library-agnostic ErrorTracker
 	tracker, err := resilience.NewErrorTracker(
-		cfg,
-		retryLogger,
-		producer,
-		consumerFactory,
-		admin,
-		coordinator,
-		resilience.NewExponentialBackoff(),
+		cfg, SharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
+		coordinator, resilience.NewExponentialBackoff(),
 	)
 	require.NoError(t, err, "failed to create error tracker")
 
@@ -1129,67 +827,30 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 	// Create consumers
 	mainConsumer, err := sarama.NewConsumerGroupFromClient(groupID, client)
 	require.NoError(t, err, "failed to create main consumer")
-	defer mainConsumer.Close()
+	t.Cleanup(func() { _ = mainConsumer.Close() })
 
 	retryConsumer, err := sarama.NewConsumerGroupFromClient(groupID+"-retry", client)
 	require.NoError(t, err, "failed to create retry consumer")
-	defer retryConsumer.Close()
+	t.Cleanup(func() { _ = retryConsumer.Close() })
 
 	dlqConsumer, err := sarama.NewConsumerGroupFromClient(groupID+"-dlq", client)
 	require.NoError(t, err, "failed to create DLQ consumer")
-	defer dlqConsumer.Close()
+	t.Cleanup(func() { _ = dlqConsumer.Close() })
 
 	// Start consumption
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()
 
 	var wg sync.WaitGroup
-
-	// Start consumers
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			if err := mainConsumer.Consume(consumerCtx, []string{topic}, handler); err != nil {
-				SharedLogger.Error("main consumer error", "error", err)
-			}
-			if consumerCtx.Err() != nil {
-				return
-			}
-		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			if err := retryConsumer.Consume(consumerCtx, []string{retryTopic}, handler); err != nil {
-				SharedLogger.Error("retry consumer error", "error", err)
-			}
-			if consumerCtx.Err() != nil {
-				return
-			}
-		}
-	}()
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			if err := dlqConsumer.Consume(consumerCtx, []string{dlqTopic}, handler); err != nil {
-				SharedLogger.Error("DLQ consumer error", "error", err)
-			}
-			if consumerCtx.Err() != nil {
-				return
-			}
-		}
-	}()
+	runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, SharedLogger)
+	runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, SharedLogger)
+	runConsumerLoop(consumerCtx, &wg, dlqConsumer, []string{dlqTopic}, handler, SharedLogger)
 
 	// Wait for consumers to be ready
 	time.Sleep(2 * time.Second)
 
 	// Produce first message that will fail and go to DLQ
-	produceTestMessage(t, broker, topic, "test-key", "first-will-fail")
+	produceTestMessage(t, sharedBroker, topic, "test-key", "first-will-fail")
 
 	// Wait for first message to go to DLQ
 	assert.Eventually(t, func() bool {
@@ -1199,7 +860,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 	SharedLogger.Info("first message sent to DLQ, now sending second message with same key")
 
 	// Produce second message with SAME key - should NOT be blocked because first was freed
-	produceTestMessage(t, broker, topic, "test-key", "second-should-process")
+	produceTestMessage(t, sharedBroker, topic, "test-key", "second-should-process")
 
 	// Wait for second message to be processed
 	assert.Eventually(t, func() bool {
