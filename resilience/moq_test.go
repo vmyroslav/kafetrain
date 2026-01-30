@@ -846,7 +846,7 @@ type StateCoordinatorMock struct {
 }
 
 // Acquire calls AcquireFunc.
-func (mock *StateCoordinatorMock) Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error {
+func (mock *StateCoordinatorMock) Acquire(ctx context.Context, originalTopic string, msg *InternalMessage) error {
 	if mock.AcquireFunc == nil {
 		panic("StateCoordinatorMock.AcquireFunc: method is nil but StateCoordinator.Acquire was just called")
 	}

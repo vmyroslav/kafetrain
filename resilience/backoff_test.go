@@ -68,7 +68,7 @@ func TestExponentialBackoff_MaxDelayCap(t *testing.T) {
 	backoff, err := NewExponentialBackoffWithConfig(1*time.Second, 10*time.Second, 2.0)
 	require.NoError(t, err)
 
-	// After 4 attempts: 1s, 2s, 4s, 8s, 16s (but capped at 10s)
+	// after 4 attempts: 1s, 2s, 4s, 8s, 16s (but capped at 10s)
 	delay := backoff.NextDelay(4)
 	assert.Equal(t, 10*time.Second, delay, "delay should be capped at MaxDelay")
 
@@ -105,7 +105,7 @@ func TestConstantBackoff(t *testing.T) {
 	backoff, err := NewConstantBackoff(delay)
 	require.NoError(t, err)
 
-	// All attempts should return the same delay
+	// all attempts should return the same delay
 	for i := 0; i < 10; i++ {
 		result := backoff.NextDelay(i)
 		assert.Equal(t, delay, result, "constant backoff should always return same delay")
@@ -127,7 +127,6 @@ func TestLinearBackoff_Default(t *testing.T) {
 
 	backoff := NewLinearBackoff()
 
-	// Test default behavior by checking actual delays
 	assert.Equal(t, 1*time.Second, backoff.NextDelay(0), "first delay should be 1s")
 	assert.Equal(t, 2*time.Second, backoff.NextDelay(1), "second delay should be 2s (1s initial + 1s increment)")
 	assert.Equal(t, 3*time.Second, backoff.NextDelay(2), "third delay should be 3s")
@@ -197,22 +196,12 @@ func TestLinearBackoff_SmallIncrement(t *testing.T) {
 	}
 }
 
-func TestBackoffStrategy_Interface(t *testing.T) {
-	t.Parallel()
-
-	// Verify all backoff types implement BackoffStrategy interface
-	var (
-		_ BackoffStrategy = (*ExponentialBackoff)(nil)
-		_ BackoffStrategy = (*ConstantBackoff)(nil)
-		_ BackoffStrategy = (*LinearBackoff)(nil)
-	)
-}
-
 func TestExponentialBackoff_RealisticScenario(t *testing.T) {
 	t.Parallel()
-	// Simulate a realistic retry scenario with default settings
+
+	// simulate a realistic retry scenario with default settings
 	backoff := NewExponentialBackoff()
-	maxDelay := 5 * time.Minute // Default max delay
+	maxDelay := 5 * time.Minute // default max delay
 
 	var totalWaitTime time.Duration
 
@@ -221,20 +210,10 @@ func TestExponentialBackoff_RealisticScenario(t *testing.T) {
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		delay := backoff.NextDelay(attempt)
 		totalWaitTime += delay
-		t.Logf("Attempt %d: delay=%v, total wait=%v", attempt, delay, totalWaitTime)
 
-		// Verify delay never exceeds max
 		require.LessOrEqual(t, delay, maxDelay, "delay should never exceed MaxDelay")
-
-		// Verify delay is reasonable (not negative or zero)
 		require.Greater(t, delay, time.Duration(0), "delay should be positive")
 	}
-
-	// After 10 attempts with exponential backoff, we should have waited a significant time
-	// Attempts: 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 300s (capped)
-	// But attempts 7+ are capped at 5m = 300s
-	// So: 1+2+4+8+16+32+64+128+256+300 = 811s
-	t.Logf("Total wait time after %d attempts: %v", maxAttempts, totalWaitTime)
 }
 
 func TestConstantBackoff_ConsistentDelays(t *testing.T) {
@@ -243,7 +222,7 @@ func TestConstantBackoff_ConsistentDelays(t *testing.T) {
 	backoff, err := NewConstantBackoff(2 * time.Second)
 	require.NoError(t, err)
 
-	// Verify that all delays are exactly the same
+	// verify that all delays are exactly the same
 	previousDelay := backoff.NextDelay(0)
 	for attempt := 1; attempt < 100; attempt++ {
 		delay := backoff.NextDelay(attempt)
@@ -255,10 +234,10 @@ func TestConstantBackoff_ConsistentDelays(t *testing.T) {
 func TestLinearBackoff_GrowthRate(t *testing.T) {
 	t.Parallel()
 
-	backoff, err := NewLinearBackoffWithConfig(1*time.Second, 1*time.Second, 100*time.Second) // High max so we don't hit it
+	backoff, err := NewLinearBackoffWithConfig(1*time.Second, 1*time.Second, 100*time.Second)
 	require.NoError(t, err)
 
-	// Verify linear growth
+	// verify linear growth
 	for attempt := 0; attempt < 10; attempt++ {
 		delay := backoff.NextDelay(attempt)
 		expected := 1*time.Second + (1 * time.Second * time.Duration(attempt))
@@ -266,40 +245,13 @@ func TestLinearBackoff_GrowthRate(t *testing.T) {
 	}
 }
 
-func TestBackoffStrategies_Comparison(t *testing.T) {
-	t.Parallel()
-	// Compare how different strategies behave over 5 attempts
-	exponential := NewExponentialBackoff()
-	constant, err := NewConstantBackoff(5 * time.Second)
-	require.NoError(t, err)
-	linear, err := NewLinearBackoffWithConfig(1*time.Second, 2*time.Second, 1*time.Hour)
-	require.NoError(t, err)
-
-	t.Log("\nComparison of backoff strategies:")
-	t.Log("Attempt | Exponential | Constant | Linear")
-	t.Log("--------|-------------|----------|-------")
-
-	for attempt := 0; attempt < 6; attempt++ {
-		expDelay := exponential.NextDelay(attempt)
-		constDelay := constant.NextDelay(attempt)
-		linDelay := linear.NextDelay(attempt)
-
-		t.Logf("   %d    |   %6s    |  %6s  | %6s",
-			attempt,
-			expDelay.String(),
-			constDelay.String(),
-			linDelay.String(),
-		)
-	}
-}
-
 func TestExponentialBackoff_ZeroMultiplier(t *testing.T) {
 	t.Parallel()
-	// Edge case: multiplier of 1.0 means no growth
+
+	// multiplier of 1.0 means no growth
 	backoff, err := NewExponentialBackoffWithConfig(1*time.Second, 10*time.Second, 1.0)
 	require.NoError(t, err)
 
-	// With multiplier 1.0, delay should always be InitialDelay
 	for attempt := 0; attempt < 5; attempt++ {
 		delay := backoff.NextDelay(attempt)
 		assert.Equal(t, 1*time.Second, delay, "with multiplier 1.0, delay should not grow")
@@ -308,18 +260,16 @@ func TestExponentialBackoff_ZeroMultiplier(t *testing.T) {
 
 func TestLinearBackoff_ZeroIncrement(t *testing.T) {
 	t.Parallel()
-	// Edge case: zero increment means constant delay
+
+	// zero increment means constant delay
 	backoff, err := NewLinearBackoffWithConfig(5*time.Second, 0, 10*time.Second)
 	require.NoError(t, err)
 
-	// With zero increment, delay should always be InitialDelay
 	for attempt := 0; attempt < 5; attempt++ {
 		delay := backoff.NextDelay(attempt)
 		assert.Equal(t, 5*time.Second, delay, "with zero increment, delay should not grow")
 	}
 }
-
-// Validation tests
 
 func TestExponentialBackoff_InvalidInitialDelay(t *testing.T) {
 	t.Parallel()

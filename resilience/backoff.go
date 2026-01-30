@@ -6,6 +6,12 @@ import (
 	"time"
 )
 
+var (
+	_ BackoffStrategy = (*ExponentialBackoff)(nil)
+	_ BackoffStrategy = (*ConstantBackoff)(nil)
+	_ BackoffStrategy = (*LinearBackoff)(nil)
+)
+
 // BackoffStrategy defines how to calculate delays between retry attempts
 type BackoffStrategy interface {
 	// NextDelay calculates the delay duration for the given attempt number (0-indexed)

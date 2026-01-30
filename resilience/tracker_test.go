@@ -64,8 +64,9 @@ func TestErrorTracker_Redirect_Rollback(t *testing.T) {
 	require.NoError(t, err)
 
 	msg := &InternalMessage{
-		topic:   "orders",
-		KeyData: []byte("order-1"),
+		topic:      "orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: &HeaderList{},
 	}
 
 	// 2. Execute Redirect
@@ -131,8 +132,9 @@ func TestErrorTracker_Redirect_RollbackFailure_LogsCriticalError(t *testing.T) {
 	require.NoError(t, err)
 
 	msg := &InternalMessage{
-		topic:   "orders",
-		KeyData: []byte("zombie-key"),
+		topic:      "orders",
+		KeyData:    []byte("zombie-key"),
+		HeaderData: &HeaderList{},
 	}
 
 	// Execute Redirect - both produce and rollback will fail
@@ -193,8 +195,9 @@ func TestErrorTracker_Redirect_RollbackSuccess_KeyNotLocked(t *testing.T) {
 	require.NoError(t, err)
 
 	msg := &InternalMessage{
-		topic:   "orders",
-		KeyData: []byte("order-123"),
+		topic:      "orders",
+		KeyData:    []byte("order-123"),
+		HeaderData: &HeaderList{},
 	}
 
 	// Before redirect: key is not locked
@@ -249,8 +252,9 @@ func TestErrorTracker_NotRetriableError_GoesDirectlyToDLQ(t *testing.T) {
 	require.NoError(t, err)
 
 	msg := &InternalMessage{
-		topic:   "orders",
-		KeyData: []byte("invalid-order"),
+		topic:      "orders",
+		KeyData:    []byte("invalid-order"),
+		HeaderData: &HeaderList{},
 	}
 
 	// Redirect with NotRetriableError
@@ -394,8 +398,9 @@ func TestErrorTracker_Redirect_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 
 	msg := &InternalMessage{
-		topic:   "orders",
-		KeyData: []byte("order-1"),
+		topic:      "orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: &HeaderList{},
 	}
 
 	err = tracker.Redirect(context.Background(), msg, errors.New("fail"))

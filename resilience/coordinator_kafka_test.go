@@ -48,7 +48,7 @@ func TestKafkaStateCoordinator_Acquire(t *testing.T) {
 	}
 	msg.HeaderData.Set("custom", []byte("val"))
 
-	err := coordinator.Acquire(ctx, msg, "orders")
+	err := coordinator.Acquire(ctx, "orders", msg)
 	require.NoError(t, err)
 
 	// optimistic locking: should be locked immediately
@@ -95,26 +95,31 @@ func TestKafkaStateCoordinator_Release(t *testing.T) {
 
 	ctx := t.Context()
 	msg := &InternalMessage{
-		topic:   "orders",
-		KeyData: []byte("order-123"),
+		topic:      "orders",
+		KeyData:    []byte("order-123"),
+		HeaderData: &HeaderList{},
 	}
 
-	// lock it first
-	_ = coordinator.local.Acquire(ctx, msg, "orders")
+	// Acquire first (sets up required headers: HeaderID, HeaderTopic)
+	err := coordinator.Acquire(ctx, "orders", msg)
+	require.NoError(t, err)
 	assert.True(t, coordinator.IsLocked(ctx, msg))
 
-	err := coordinator.Release(ctx, msg)
+	err = coordinator.Release(ctx, msg)
 	require.NoError(t, err)
 
 	// optimistic release: should be unlocked immediately
 	assert.False(t, coordinator.IsLocked(ctx, msg))
 
-	assert.Len(t, mockProducer.ProduceCalls(), 1)
-	call := mockProducer.ProduceCalls()[0]
+	// 2 produce calls: 1 for acquire, 1 for release (tombstone)
+	assert.Len(t, mockProducer.ProduceCalls(), 2)
+	releaseCall := mockProducer.ProduceCalls()[1]
 
-	headers := call.Msg.Headers().All()
+	headers := releaseCall.Msg.Headers().All()
 	assert.Contains(t, headers, HeaderCoordinatorID)
 	assert.Equal(t, []byte(coordinator.instanceID), headers[HeaderCoordinatorID])
+	// Verify tombstone (nil payload)
+	assert.Nil(t, releaseCall.Msg.Value())
 }
 
 func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
@@ -196,8 +201,9 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 
 	// verify state was restored
 	msg := &InternalMessage{
-		topic:   "orders",
-		KeyData: []byte("order-locked"),
+		topic:      "orders",
+		KeyData:    []byte("order-locked"),
+		HeaderData: &HeaderList{},
 	}
 	assert.True(t, coordinator.IsLocked(t.Context(), msg))
 }
@@ -222,12 +228,12 @@ func TestKafkaStateCoordinator_Acquire_ProducerError(t *testing.T) {
 		make(chan error),
 	)
 
-	err := coordinator.Acquire(t.Context(), &InternalMessage{topic: "t", KeyData: []byte("k")}, "t")
+	err := coordinator.Acquire(t.Context(), "t", &InternalMessage{topic: "t", KeyData: []byte("k"), HeaderData: &HeaderList{}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kafka error")
 
 	// Verify Rollback: Should NOT be locked
-	msg := &InternalMessage{topic: "t", KeyData: []byte("k")}
+	msg := &InternalMessage{topic: "t", KeyData: []byte("k"), HeaderData: &HeaderList{}}
 	assert.False(t, coordinator.IsLocked(t.Context(), msg))
 }
 
@@ -253,7 +259,7 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 	echoMsg.HeaderData.Set("key", []byte("k1"))
 
 	// We call Acquire first to set local ref count to 1 (simulating the source of the echo)
-	_ = coordinator.local.Acquire(t.Context(), &InternalMessage{topic: "orders", KeyData: []byte("k1")}, "orders")
+	_ = coordinator.local.Acquire(t.Context(), "orders", &InternalMessage{topic: "orders", KeyData: []byte("k1"), HeaderData: &HeaderList{}})
 
 	// Process the echo message
 	err := coordinator.processRedirectMessage(t.Context(), echoMsg)
@@ -293,8 +299,8 @@ func TestKafkaStateCoordinator_ForeignTombstone(t *testing.T) {
 	)
 
 	// Simulate we have a lock locally (maybe restored or acquired)
-	_ = coordinator.local.Acquire(t.Context(), &InternalMessage{topic: "orders", KeyData: []byte("key1")}, "orders")
-	msg := &InternalMessage{topic: "orders", KeyData: []byte("key1")}
+	_ = coordinator.local.Acquire(t.Context(), "orders", &InternalMessage{topic: "orders", KeyData: []byte("key1"), HeaderData: &HeaderList{}})
+	msg := &InternalMessage{topic: "orders", KeyData: []byte("key1"), HeaderData: &HeaderList{}}
 	assert.True(t, coordinator.IsLocked(t.Context(), msg))
 
 	// Receive a Tombstone from a different coordinator (Failover scenario)
@@ -401,7 +407,7 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify Instance B has the lock
-	checkMsg := &InternalMessage{topic: topic, KeyData: []byte(key)}
+	checkMsg := &InternalMessage{topic: topic, KeyData: []byte(key), HeaderData: &HeaderList{}}
 	assert.True(t, coordinator.IsLocked(t.Context(), checkMsg), "Instance B should have restored the lock")
 }
 

@@ -483,7 +483,7 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 	// If it's already in the retry chain, the lock is already held.
 	alreadyInRetry, _ := GetHeaderValue[string](msg.HeaderData, HeaderRetry)
 	if alreadyInRetry != "true" {
-		if err := t.coordinator.Acquire(ctx, msg, originalTopic); err != nil {
+		if err := t.coordinator.Acquire(ctx, originalTopic, msg); err != nil {
 			return fmt.Errorf("failed to acquire lock (topic=%s, key=%s): %w", originalTopic, key, err)
 		}
 	}

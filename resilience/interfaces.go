@@ -12,7 +12,7 @@ type StateCoordinator interface {
 	Start(ctx context.Context, topic string) error
 
 	// Acquire locks the key to ensure strict ordering.
-	Acquire(ctx context.Context, msg *InternalMessage, originalTopic string) error
+	Acquire(ctx context.Context, originalTopic string, msg *InternalMessage) error
 
 	// Release unlocks the key.
 	Release(ctx context.Context, msg *InternalMessage) error

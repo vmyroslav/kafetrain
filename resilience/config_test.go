@@ -32,7 +32,6 @@ func TestConfig_Validate_MissingGroupID(t *testing.T) {
 	t.Parallel()
 
 	cfg := NewDefaultConfig()
-	// GroupID is empty
 
 	err := cfg.Validate()
 	require.Error(t, err)
@@ -216,7 +215,7 @@ func TestConfig_Validate_MultipleErrors(t *testing.T) {
 	err := cfg.Validate()
 	require.Error(t, err)
 
-	// Should contain multiple errors
+	// should contain multiple errors
 	assert.Contains(t, err.Error(), "GroupID is required")
 	assert.Contains(t, err.Error(), "RetryTopicPrefix cannot be empty")
 	assert.Contains(t, err.Error(), "MaxRetries must be >= 0")

@@ -57,8 +57,9 @@ func TestProducerFailure_Rollback(t *testing.T) {
 	require.NoError(t, err)
 
 	msg := &InternalMessage{
-		topic:   "orders",
-		KeyData: []byte("order-1"),
+		topic:      "orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: &HeaderList{},
 	}
 
 	// simulating a failure

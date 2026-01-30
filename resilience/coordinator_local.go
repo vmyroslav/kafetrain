@@ -25,7 +25,7 @@ func (l *LocalStateCoordinator) Start(_ context.Context, _ string) error {
 }
 
 // Acquire locks the key in local memory.
-func (l *LocalStateCoordinator) Acquire(_ context.Context, msg *InternalMessage, originalTopic string) error {
+func (l *LocalStateCoordinator) Acquire(_ context.Context, originalTopic string, msg *InternalMessage) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
