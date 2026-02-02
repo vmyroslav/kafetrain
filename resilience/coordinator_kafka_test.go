@@ -118,7 +118,7 @@ func TestKafkaStateCoordinator_Release(t *testing.T) {
 	headers := releaseCall.Msg.Headers().All()
 	assert.Contains(t, headers, HeaderCoordinatorID)
 	assert.Equal(t, []byte(coordinator.instanceID), headers[HeaderCoordinatorID])
-	// Verify tombstone (nil payload)
+	// verify tombstone
 	assert.Nil(t, releaseCall.Msg.Value())
 }
 
@@ -143,7 +143,7 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 
 	restoreConsumer := &ConsumerMock{
 		ConsumeFunc: func(ctx context.Context, _ []string, handler ConsumerHandler) error {
-			// Simulate reading a lock message from redirect topic
+			// simulate reading a lock message from redirect topic
 			// NO CoordinatorID header -> simulates legacy message or other instance
 			msg := &InternalMessage{
 				topic:      "redirect_orders",
@@ -155,7 +155,7 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 			msg.HeaderData.Set("key", []byte("order-locked"))
 
 			msg.SetPartition(0)
-			msg.SetOffset(9) // Last offset (target is 10)
+			msg.SetOffset(9) // last offset (target is 10)
 			_ = handler.Handle(ctx, msg)
 
 			return nil
@@ -232,7 +232,7 @@ func TestKafkaStateCoordinator_Acquire_ProducerError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kafka error")
 
-	// Verify Rollback: Should NOT be locked
+	// verify rollback: should NOT be locked
 	msg := &InternalMessage{topic: "t", KeyData: []byte("k"), HeaderData: &HeaderList{}}
 	assert.False(t, coordinator.IsLocked(t.Context(), msg))
 }
@@ -247,7 +247,7 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 		nil,
 	)
 
-	// 1. Simulate "Echo" message (Same ID)
+	// simulate "Echo" message (Same ID)
 	echoMsg := &InternalMessage{
 		topic:      "redirect_orders",
 		KeyData:    []byte("k1"),
@@ -258,18 +258,18 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 	echoMsg.HeaderData.Set(HeaderTopic, []byte("orders"))
 	echoMsg.HeaderData.Set("key", []byte("k1"))
 
-	// We call Acquire first to set local ref count to 1 (simulating the source of the echo)
+	// we call Acquire first to set local ref count to 1 (simulating the source of the echo)
 	_ = coordinator.local.Acquire(t.Context(), "orders", &InternalMessage{topic: "orders", KeyData: []byte("k1"), HeaderData: &HeaderList{}})
 
-	// Process the echo message
+	// process the echo message
 	err := coordinator.processRedirectMessage(t.Context(), echoMsg)
 	require.NoError(t, err)
 
-	// Ref count should still be 1 (Not incremented to 2)
+	// ref count should still be 1 (not incremented to 2)
 	count, _ := coordinator.local.lm.getRefCount("orders", "k1")
 	assert.Equal(t, 1, count)
 
-	// 2. Simulate "Foreign" message (Different ID)
+	// simulate "foreign" message (different ID)
 	foreignMsg := &InternalMessage{
 		topic:      "redirect_orders",
 		KeyData:    []byte("k1"),
@@ -283,7 +283,7 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 	err = coordinator.processRedirectMessage(t.Context(), foreignMsg)
 	require.NoError(t, err)
 
-	// Ref count should now be 2
+	// ref count should now be 2
 	count, _ = coordinator.local.lm.getRefCount("orders", "k1")
 	assert.Equal(t, 2, count)
 }
@@ -298,18 +298,18 @@ func TestKafkaStateCoordinator_ForeignTombstone(t *testing.T) {
 		nil,
 	)
 
-	// Simulate we have a lock locally (maybe restored or acquired)
+	// simulate we have a lock locally (maybe restored or acquired)
 	_ = coordinator.local.Acquire(t.Context(), "orders", &InternalMessage{topic: "orders", KeyData: []byte("key1"), HeaderData: &HeaderList{}})
 	msg := &InternalMessage{topic: "orders", KeyData: []byte("key1"), HeaderData: &HeaderList{}}
 	assert.True(t, coordinator.IsLocked(t.Context(), msg))
 
-	// Receive a Tombstone from a different coordinator (Failover scenario)
+	// receive a Tombstone from a different coordinator (failover scenario)
 	tombstone := createMockRedirectMsg("orders", "key1", "other-instance", false)
 
 	err := coordinator.processRedirectMessage(t.Context(), tombstone)
 	require.NoError(t, err)
 
-	// Should be unlocked
+	// should be unlocked
 	assert.False(t, coordinator.IsLocked(t.Context(), msg))
 }
 
@@ -343,11 +343,11 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 	// this consumer will be used by restoreState
 	restoreConsumer := &ConsumerMock{
 		ConsumeFunc: func(ctx context.Context, _ []string, handler ConsumerHandler) error {
-			// Simulate the existing lock message on the topic
+			// simulate the existing lock message on the topic
 			msg := &InternalMessage{
 				topic:      "redirect_orders",
 				KeyData:    []byte(key),
-				Payload:    []byte(key), // Payload exists = Locked
+				Payload:    []byte(key), // payload exists = Locked
 				HeaderData: &HeaderList{},
 			}
 			msg.HeaderData.Set(HeaderTopic, []byte(topic))
@@ -367,7 +367,7 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 		CloseFunc: func() error { return nil },
 	}
 
-	// Live consumer (post-restore)
+	// live consumer (post-restore)
 	liveConsumer := &ConsumerMock{
 		ConsumeFunc: func(ctx context.Context, _ []string, _ ConsumerHandler) error {
 			<-ctx.Done()
@@ -382,7 +382,7 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 			return restoreConsumer, nil
 		},
 	}
-	// We need to patch the factory for the second call (live consumer) inside the test flow or use a counter
+	// we need to patch the factory for the second call (live consumer) inside the test flow or use a counter
 	callCount := 0
 	mockFactory.NewConsumerFunc = func(_ string) (Consumer, error) {
 		callCount++
@@ -402,11 +402,11 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 		make(chan error, 1),
 	)
 
-	// Start Instance B
+	// start Instance B
 	err := coordinator.Start(t.Context(), topic)
 	require.NoError(t, err)
 
-	// Verify Instance B has the lock
+	// verify Instance B has the lock
 	checkMsg := &InternalMessage{topic: topic, KeyData: []byte(key), HeaderData: &HeaderList{}}
 	assert.True(t, coordinator.IsLocked(t.Context(), checkMsg), "Instance B should have restored the lock")
 }

@@ -23,18 +23,17 @@ const kafkaImage = "confluentinc/confluent-local:7.6.0"
 var (
 	sharedBroker string
 	sharedKafka  *kafka.KafkaContainer
-	SharedLogger *slog.Logger
+	sharedLogger *slog.Logger
 )
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
 
-	// Setup logger
-	SharedLogger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	sharedLogger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}))
 
-	// Start shared Kafka container
+	// start shared Kafka container
 	var err error
 	sharedKafka, err = kafka.Run(ctx, kafkaImage, kafka.WithClusterID("test-cluster"))
 	if err != nil {
@@ -51,10 +50,10 @@ func TestMain(m *testing.M) {
 	sharedBroker = brokers[0]
 	fmt.Printf("Kafka container started at: %s\n", sharedBroker)
 
-	// Run tests
+	// run tests
 	code := m.Run()
 
-	// Cleanup
+	// cleanup
 	if err := sharedKafka.Terminate(ctx); err != nil {
 		fmt.Printf("failed to terminate Kafka container: %v\n", err)
 	}
@@ -94,10 +93,6 @@ func produceTestMessage(t *testing.T, broker, topic, key, value string) {
 	require.NoError(t, err)
 }
 
-// -----------------------------------------------------------------------------
-// Test Helpers - Reduce boilerplate across integration tests
-// -----------------------------------------------------------------------------
-
 // newTestSaramaConfig creates a standard Sarama config for tests.
 func newTestSaramaConfig() *sarama.Config {
 	cfg := sarama.NewConfig()
@@ -118,6 +113,7 @@ func newTestClient(t *testing.T) sarama.Client {
 	client, err := sarama.NewClient([]string{sharedBroker}, newTestSaramaConfig())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
+
 	return client
 }
 
@@ -160,11 +156,11 @@ func newTestTracker(t *testing.T, groupID string, adapters *testAdapters) *resil
 
 	errCh := make(chan error, 10)
 	coordinator := resilience.NewKafkaStateCoordinator(
-		cfg, SharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin, errCh,
+		cfg, sharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin, errCh,
 	)
 
 	tracker, err := resilience.NewErrorTracker(
-		cfg, SharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
+		cfg, sharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
 		coordinator, resilience.NewExponentialBackoff(),
 	)
 	require.NoError(t, err)
@@ -176,6 +172,7 @@ func newTestTracker(t *testing.T, groupID string, adapters *testAdapters) *resil
 // newTestIDs generates unique topic and group IDs for a test.
 func newTestIDs(prefix string) (topic, groupID string) {
 	suffix := time.Now().UnixNano()
+
 	return fmt.Sprintf("%s-topic-%d", prefix, suffix),
 		fmt.Sprintf("%s-group-%d", prefix, suffix)
 }

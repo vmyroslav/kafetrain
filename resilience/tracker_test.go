@@ -3,6 +3,7 @@ package resilience
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -409,4 +410,1524 @@ func TestErrorTracker_Redirect_HappyPath(t *testing.T) {
 	assert.Len(t, mockCoordinator.AcquireCalls(), 1)
 	assert.Len(t, mockProducer.ProduceCalls(), 1)
 	assert.Equal(t, "retry_orders", mockProducer.ProduceCalls()[0].Topic)
+}
+
+func TestErrorTracker_Redirect_AlreadyInRetry_SkipsLockAcquisition(t *testing.T) {
+	// When a message is already in retry (has HeaderRetry="true"),
+	// Redirect should NOT call Acquire again - the lock is already held
+	var producedMsg Message
+
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, _ string, msg Message) error {
+			producedMsg = msg
+			return nil
+		},
+	}
+
+	mockCoordinator := &StateCoordinatorMock{
+		AcquireFunc: func(_ context.Context, _ *InternalMessage, _ string) error {
+			t.Error("Acquire should NOT be called for messages already in retry")
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.MaxRetries = 5
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	// Message that's already in the retry chain
+	headers := &HeaderList{}
+	_ = SetHeader[string](headers, HeaderRetry, "true")
+	_ = SetHeader[string](headers, HeaderID, "existing-lock-id")
+	_ = SetHeader[string](headers, HeaderTopic, "orders")
+	_ = SetHeader[int](headers, HeaderRetryAttempt, 1)
+
+	msg := &InternalMessage{
+		topic:      "retry_orders", // Coming from retry topic
+		KeyData:    []byte("order-1"),
+		HeaderData: headers,
+	}
+
+	err = tracker.Redirect(context.Background(), msg, errors.New("still failing"))
+	require.NoError(t, err)
+
+	// Acquire should NOT have been called
+	assert.Empty(t, mockCoordinator.AcquireCalls(), "Lock should not be re-acquired for retry messages")
+
+	// Message should still be produced to retry topic
+	assert.Len(t, mockProducer.ProduceCalls(), 1)
+
+	// Verify the ID header is preserved
+	idBytes, ok := producedMsg.Headers().Get(HeaderID)
+	assert.True(t, ok)
+	assert.Equal(t, "existing-lock-id", string(idBytes))
+}
+
+func TestErrorTracker_Redirect_IncrementsAttemptCounter(t *testing.T) {
+	// Verify that each Redirect increments the attempt counter
+	var producedMsg Message
+
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, _ string, msg Message) error {
+			producedMsg = msg
+			return nil
+		},
+	}
+
+	mockCoordinator := &StateCoordinatorMock{
+		AcquireFunc: func(_ context.Context, _ *InternalMessage, _ string) error {
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.MaxRetries = 5
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	// First redirect (no existing attempt header)
+	msg := &InternalMessage{
+		topic:      "orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: &HeaderList{},
+	}
+
+	err = tracker.Redirect(context.Background(), msg, errors.New("fail"))
+	require.NoError(t, err)
+
+	// Check attempt is 1
+	attemptBytes, ok := producedMsg.Headers().Get(HeaderRetryAttempt)
+	require.True(t, ok)
+	assert.Equal(t, "1", string(attemptBytes))
+
+	// Second redirect (simulating retry message with attempt=1)
+	headers := &HeaderList{}
+	_ = SetHeader[string](headers, HeaderRetry, "true")
+	_ = SetHeader[string](headers, HeaderID, "lock-id")
+	_ = SetHeader[string](headers, HeaderTopic, "orders")
+	_ = SetHeader[int](headers, HeaderRetryAttempt, 1)
+
+	msg2 := &InternalMessage{
+		topic:      "retry_orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: headers,
+	}
+
+	err = tracker.Redirect(context.Background(), msg2, errors.New("still failing"))
+	require.NoError(t, err)
+
+	// Check attempt is now 2
+	attemptBytes, ok = producedMsg.Headers().Get(HeaderRetryAttempt)
+	require.True(t, ok)
+	assert.Equal(t, "2", string(attemptBytes))
+}
+
+func TestErrorTracker_Redirect_PreservesUserHeaders(t *testing.T) {
+	// User-defined headers should be preserved across retries
+	var producedMsg Message
+
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, _ string, msg Message) error {
+			producedMsg = msg
+			return nil
+		},
+	}
+
+	mockCoordinator := &StateCoordinatorMock{
+		AcquireFunc: func(_ context.Context, _ *InternalMessage, _ string) error {
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.MaxRetries = 5
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	// Message with custom user headers
+	headers := &HeaderList{}
+	headers.Set("x-correlation-id", []byte("corr-123"))
+	headers.Set("x-trace-id", []byte("trace-456"))
+	headers.Set("x-custom-header", []byte("custom-value"))
+
+	msg := &InternalMessage{
+		topic:      "orders",
+		KeyData:    []byte("order-1"),
+		Payload:    []byte(`{"order": "data"}`),
+		HeaderData: headers,
+	}
+
+	err = tracker.Redirect(context.Background(), msg, errors.New("temporary failure"))
+	require.NoError(t, err)
+
+	// Verify user headers are preserved
+	corrID, ok := producedMsg.Headers().Get("x-correlation-id")
+	assert.True(t, ok, "x-correlation-id should be preserved")
+	assert.Equal(t, "corr-123", string(corrID))
+
+	traceID, ok := producedMsg.Headers().Get("x-trace-id")
+	assert.True(t, ok, "x-trace-id should be preserved")
+	assert.Equal(t, "trace-456", string(traceID))
+
+	customHeader, ok := producedMsg.Headers().Get("x-custom-header")
+	assert.True(t, ok, "x-custom-header should be preserved")
+	assert.Equal(t, "custom-value", string(customHeader))
+
+	// Retry headers should also be added
+	_, ok = producedMsg.Headers().Get(HeaderRetryAttempt)
+	assert.True(t, ok, "retry attempt header should be added")
+
+	_, ok = producedMsg.Headers().Get(HeaderRetry)
+	assert.True(t, ok, "retry flag header should be added")
+}
+
+func TestErrorTracker_Redirect_PreservesOriginalTopic(t *testing.T) {
+	// When redirecting from retry topic, the original topic should be preserved
+	var producedMsg Message
+	var producedTopic string
+
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, topic string, msg Message) error {
+			producedTopic = topic
+			producedMsg = msg
+			return nil
+		},
+	}
+
+	mockCoordinator := &StateCoordinatorMock{
+		AcquireFunc: func(_ context.Context, _ *InternalMessage, _ string) error {
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.MaxRetries = 5
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	// Message coming from retry topic with original topic in headers
+	headers := &HeaderList{}
+	_ = SetHeader[string](headers, HeaderRetry, "true")
+	_ = SetHeader[string](headers, HeaderID, "lock-id")
+	_ = SetHeader[string](headers, HeaderTopic, "original-orders") // Original topic
+	_ = SetHeader[int](headers, HeaderRetryAttempt, 1)
+
+	msg := &InternalMessage{
+		topic:      "retry_original-orders", // Current topic is retry
+		KeyData:    []byte("order-1"),
+		HeaderData: headers,
+	}
+
+	err = tracker.Redirect(context.Background(), msg, errors.New("still failing"))
+	require.NoError(t, err)
+
+	// Should produce to retry topic based on ORIGINAL topic
+	assert.Equal(t, "retry_original-orders", producedTopic)
+
+	// Original topic header should be preserved
+	topicHeader, ok := producedMsg.Headers().Get(HeaderTopic)
+	assert.True(t, ok)
+	assert.Equal(t, "original-orders", string(topicHeader))
+}
+
+func TestErrorTracker_Redirect_AcquireFailure_ReturnsError(t *testing.T) {
+	// If Acquire fails, Redirect should return error without producing
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, _ string, _ Message) error {
+			t.Error("Produce should NOT be called if Acquire fails")
+			return nil
+		},
+	}
+
+	mockCoordinator := &StateCoordinatorMock{
+		AcquireFunc: func(_ context.Context, _ *InternalMessage, _ string) error {
+			return errors.New("coordinator unavailable")
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.MaxRetries = 5
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	msg := &InternalMessage{
+		topic:      "orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: &HeaderList{},
+	}
+
+	err = tracker.Redirect(context.Background(), msg, errors.New("business error"))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to acquire lock")
+	assert.Contains(t, err.Error(), "coordinator unavailable")
+
+	// Producer should not have been called
+	assert.Empty(t, mockProducer.ProduceCalls())
+}
+
+func TestErrorTracker_Redirect_SetsRetryMetadataHeaders(t *testing.T) {
+	// Verify all retry metadata headers are correctly set
+	var producedMsg Message
+
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, _ string, msg Message) error {
+			producedMsg = msg
+			return nil
+		},
+	}
+
+	mockCoordinator := &StateCoordinatorMock{
+		AcquireFunc: func(_ context.Context, msg *InternalMessage, _ string) error {
+			// Simulate Acquire setting the ID header
+			_ = SetHeader[string](msg.HeaderData, HeaderID, "generated-uuid-123")
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.MaxRetries = 5
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	msg := &InternalMessage{
+		topic:      "orders",
+		KeyData:    []byte("order-1"),
+		Payload:    []byte("payload"),
+		HeaderData: &HeaderList{},
+	}
+
+	err = tracker.Redirect(context.Background(), msg, errors.New("business error"))
+	require.NoError(t, err)
+
+	headers := producedMsg.Headers()
+
+	// Verify all retry headers
+	attemptBytes, ok := headers.Get(HeaderRetryAttempt)
+	assert.True(t, ok, "HeaderRetryAttempt should be set")
+	assert.Equal(t, "1", string(attemptBytes))
+
+	maxBytes, ok := headers.Get(HeaderRetryMax)
+	assert.True(t, ok, "HeaderRetryMax should be set")
+	assert.Equal(t, "5", string(maxBytes))
+
+	_, ok = headers.Get(HeaderRetryNextTime)
+	assert.True(t, ok, "HeaderRetryNextTime should be set")
+
+	_, ok = headers.Get(HeaderRetryOriginalTime)
+	assert.True(t, ok, "HeaderRetryOriginalTime should be set")
+
+	reasonBytes, ok := headers.Get(HeaderRetryReason)
+	assert.True(t, ok, "HeaderRetryReason should be set")
+	assert.Equal(t, "business error", string(reasonBytes))
+
+	idBytes, ok := headers.Get(HeaderID)
+	assert.True(t, ok, "HeaderID should be set")
+	assert.Equal(t, "generated-uuid-123", string(idBytes))
+
+	retryBytes, ok := headers.Get(HeaderRetry)
+	assert.True(t, ok, "HeaderRetry should be set")
+	assert.Equal(t, "true", string(retryBytes))
+
+	topicBytes, ok := headers.Get(HeaderTopic)
+	assert.True(t, ok, "HeaderTopic should be set")
+	assert.Equal(t, "orders", string(topicBytes))
+}
+
+// --- Free() Tests ---
+
+func TestErrorTracker_Free_HappyPath(t *testing.T) {
+	// Free should call coordinator.Release
+	var releasedMsg *InternalMessage
+
+	mockCoordinator := &StateCoordinatorMock{
+		ReleaseFunc: func(_ context.Context, msg *InternalMessage) error {
+			releasedMsg = msg
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	headers := &HeaderList{}
+	_ = SetHeader[string](headers, HeaderID, "lock-id-123")
+	_ = SetHeader[string](headers, HeaderTopic, "orders")
+
+	msg := &InternalMessage{
+		topic:      "retry_orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: headers,
+	}
+
+	err = tracker.Free(context.Background(), msg)
+	require.NoError(t, err)
+
+	assert.Len(t, mockCoordinator.ReleaseCalls(), 1)
+	assert.Equal(t, []byte("order-1"), releasedMsg.KeyData)
+}
+
+func TestErrorTracker_Free_CoordinatorFailure_ReturnsError(t *testing.T) {
+	// If coordinator.Release fails, Free should return the error
+	mockCoordinator := &StateCoordinatorMock{
+		ReleaseFunc: func(_ context.Context, _ *InternalMessage) error {
+			return errors.New("coordinator release failed")
+		},
+	}
+
+	cfg := newTestConfig()
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	msg := &InternalMessage{
+		topic:      "retry_orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: &HeaderList{},
+	}
+
+	err = tracker.Free(context.Background(), msg)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "coordinator release failed")
+}
+
+func TestErrorTracker_Free_WithMissingHeaders_StillCallsRelease(t *testing.T) {
+	// Even without proper headers, Free should attempt Release
+	// The coordinator is responsible for handling missing headers gracefully
+	var releaseCalled bool
+
+	mockCoordinator := &StateCoordinatorMock{
+		ReleaseFunc: func(_ context.Context, _ *InternalMessage) error {
+			releaseCalled = true
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	// Message with no headers at all
+	msg := &InternalMessage{
+		topic:      "retry_orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: &HeaderList{},
+	}
+
+	err = tracker.Free(context.Background(), msg)
+	require.NoError(t, err)
+
+	assert.True(t, releaseCalled, "Release should be called even with missing headers")
+}
+
+// --- SendToDLQ() Tests ---
+
+func TestErrorTracker_SendToDLQ_HappyPath(t *testing.T) {
+	var producedTopic string
+	var producedMsg Message
+
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, topic string, msg Message) error {
+			producedTopic = topic
+			producedMsg = msg
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.MaxRetries = 3
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			ErrorFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	msg := &InternalMessage{
+		topic:      "orders",
+		KeyData:    []byte("order-1"),
+		Payload:    []byte(`{"order": "data"}`),
+		HeaderData: &HeaderList{},
+	}
+
+	err = tracker.SendToDLQ(context.Background(), msg, errors.New("max retries exceeded"))
+	require.NoError(t, err)
+
+	// Should produce to DLQ topic
+	assert.Equal(t, "dlq_orders", producedTopic)
+
+	// Should preserve payload
+	assert.Equal(t, []byte(`{"order": "data"}`), producedMsg.Value())
+
+	// Should have DLQ headers
+	headers := producedMsg.Headers()
+
+	reasonBytes, ok := headers.Get(HeaderDLQReason)
+	assert.True(t, ok, "DLQ reason header should be set")
+	assert.Equal(t, "max retries exceeded", string(reasonBytes))
+
+	_, ok = headers.Get(HeaderDLQTimestamp)
+	assert.True(t, ok, "DLQ timestamp header should be set")
+
+	sourceBytes, ok := headers.Get(HeaderDLQSourceTopic)
+	assert.True(t, ok, "DLQ source topic header should be set")
+	assert.Equal(t, "orders", string(sourceBytes))
+}
+
+func TestErrorTracker_SendToDLQ_PreservesOriginalTopicFromHeader(t *testing.T) {
+	var producedTopic string
+
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, topic string, _ Message) error {
+			producedTopic = topic
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			ErrorFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	// Message from retry topic with original topic in header
+	headers := &HeaderList{}
+	_ = SetHeader[string](headers, HeaderTopic, "original-orders")
+
+	msg := &InternalMessage{
+		topic:      "retry_original-orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: headers,
+	}
+
+	err = tracker.SendToDLQ(context.Background(), msg, errors.New("permanent failure"))
+	require.NoError(t, err)
+
+	// Should use original topic for DLQ naming
+	assert.Equal(t, "dlq_original-orders", producedTopic)
+}
+
+func TestErrorTracker_SendToDLQ_IncludesRetryAttemptCount(t *testing.T) {
+	var producedMsg Message
+
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, _ string, msg Message) error {
+			producedMsg = msg
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			ErrorFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	// Message that has gone through 3 retry attempts
+	headers := &HeaderList{}
+	_ = SetHeader[int](headers, HeaderRetryAttempt, 3)
+	_ = SetHeader[string](headers, HeaderTopic, "orders")
+
+	msg := &InternalMessage{
+		topic:      "retry_orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: headers,
+	}
+
+	err = tracker.SendToDLQ(context.Background(), msg, errors.New("still failing"))
+	require.NoError(t, err)
+
+	// DLQ should include retry attempts count
+	attemptsBytes, ok := producedMsg.Headers().Get(HeaderDLQRetryAttempts)
+	assert.True(t, ok, "DLQ retry attempts header should be set")
+	assert.Equal(t, "3", string(attemptsBytes))
+}
+
+func TestErrorTracker_SendToDLQ_ProducerFailure_ReturnsError(t *testing.T) {
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, _ string, _ Message) error {
+			return errors.New("kafka unavailable")
+		},
+	}
+
+	cfg := newTestConfig()
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			ErrorFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	msg := &InternalMessage{
+		topic:      "orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: &HeaderList{},
+	}
+
+	err = tracker.SendToDLQ(context.Background(), msg, errors.New("some error"))
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "kafka unavailable")
+}
+
+// --- handleMaxRetriesExceeded() Tests ---
+
+func TestErrorTracker_MaxRetriesExceeded_SendsToDLQ(t *testing.T) {
+	var producedTopic string
+
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, topic string, _ Message) error {
+			producedTopic = topic
+			return nil
+		},
+	}
+
+	mockCoordinator := &StateCoordinatorMock{
+		AcquireFunc: func(_ context.Context, _ *InternalMessage, _ string) error {
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.MaxRetries = 3
+	cfg.FreeOnDLQ = false
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+			WarnFunc:  func(_ string, _ ...interface{}) {},
+			ErrorFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	// Message that has already reached max retries
+	headers := &HeaderList{}
+	_ = SetHeader[int](headers, HeaderRetryAttempt, 3) // Equal to MaxRetries
+	_ = SetHeader[string](headers, HeaderRetry, "true")
+	_ = SetHeader[string](headers, HeaderID, "lock-id")
+	_ = SetHeader[string](headers, HeaderTopic, "orders")
+
+	msg := &InternalMessage{
+		topic:      "retry_orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: headers,
+	}
+
+	err = tracker.Redirect(context.Background(), msg, errors.New("still failing"))
+	require.NoError(t, err)
+
+	// Should go to DLQ, not retry topic
+	assert.Equal(t, "dlq_orders", producedTopic)
+}
+
+func TestErrorTracker_MaxRetriesExceeded_FreeOnDLQ_True_ReleasesLock(t *testing.T) {
+	var releaseCalled bool
+
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, _ string, _ Message) error {
+			return nil
+		},
+	}
+
+	mockCoordinator := &StateCoordinatorMock{
+		ReleaseFunc: func(_ context.Context, _ *InternalMessage) error {
+			releaseCalled = true
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.MaxRetries = 3
+	cfg.FreeOnDLQ = true // Should release lock after DLQ
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+			WarnFunc:  func(_ string, _ ...interface{}) {},
+			ErrorFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	headers := &HeaderList{}
+	_ = SetHeader[int](headers, HeaderRetryAttempt, 3)
+	_ = SetHeader[string](headers, HeaderRetry, "true")
+	_ = SetHeader[string](headers, HeaderID, "lock-id")
+	_ = SetHeader[string](headers, HeaderTopic, "orders")
+
+	msg := &InternalMessage{
+		topic:      "retry_orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: headers,
+	}
+
+	err = tracker.Redirect(context.Background(), msg, errors.New("still failing"))
+	require.NoError(t, err)
+
+	assert.True(t, releaseCalled, "Release should be called when FreeOnDLQ=true")
+}
+
+func TestErrorTracker_MaxRetriesExceeded_FreeOnDLQ_False_KeepsLock(t *testing.T) {
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, _ string, _ Message) error {
+			return nil
+		},
+	}
+
+	mockCoordinator := &StateCoordinatorMock{
+		ReleaseFunc: func(_ context.Context, _ *InternalMessage) error {
+			t.Error("Release should NOT be called when FreeOnDLQ=false")
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.MaxRetries = 3
+	cfg.FreeOnDLQ = false // Should NOT release lock after DLQ
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+			WarnFunc:  func(_ string, _ ...interface{}) {},
+			ErrorFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	headers := &HeaderList{}
+	_ = SetHeader[int](headers, HeaderRetryAttempt, 3)
+	_ = SetHeader[string](headers, HeaderRetry, "true")
+	_ = SetHeader[string](headers, HeaderID, "lock-id")
+	_ = SetHeader[string](headers, HeaderTopic, "orders")
+
+	msg := &InternalMessage{
+		topic:      "retry_orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: headers,
+	}
+
+	err = tracker.Redirect(context.Background(), msg, errors.New("still failing"))
+	require.NoError(t, err)
+
+	// Release should NOT have been called
+	assert.Empty(t, mockCoordinator.ReleaseCalls(), "Release should not be called when FreeOnDLQ=false")
+}
+
+// --- WaitForRetryTime() Tests ---
+
+func TestErrorTracker_WaitForRetryTime_NoHeader_ReturnsImmediately(t *testing.T) {
+	// If no retry time header exists, should return immediately
+	cfg := newTestConfig()
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	msg := &InternalMessage{
+		topic:      "retry_orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: &HeaderList{}, // No headers
+	}
+
+	start := time.Now()
+	err = tracker.WaitForRetryTime(context.Background(), msg)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Less(t, elapsed, 50*time.Millisecond, "Should return immediately without header")
+}
+
+func TestErrorTracker_WaitForRetryTime_PastTime_ReturnsImmediately(t *testing.T) {
+	// If retry time is in the past, should return immediately
+	cfg := newTestConfig()
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+		},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	// Set retry time to 1 hour ago
+	pastTime := time.Now().Add(-1 * time.Hour)
+	headers := &HeaderList{}
+	_ = SetHeader[time.Time](headers, HeaderRetryNextTime, pastTime)
+
+	msg := &InternalMessage{
+		topic:      "retry_orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: headers,
+	}
+
+	start := time.Now()
+	err = tracker.WaitForRetryTime(context.Background(), msg)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Less(t, elapsed, 50*time.Millisecond, "Should return immediately when time is in the past")
+}
+
+func TestErrorTracker_WaitForRetryTime_FutureTime_Waits(t *testing.T) {
+	// If retry time is in the future, should wait
+	// Note: Unix timestamps have second granularity, so we need to wait at least 1 second
+	cfg := newTestConfig()
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+		},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	// Set retry time to 1.5 seconds in the future (to account for second granularity)
+	futureTime := time.Now().Add(1500 * time.Millisecond)
+	headers := &HeaderList{}
+	_ = SetHeader[time.Time](headers, HeaderRetryNextTime, futureTime)
+
+	msg := &InternalMessage{
+		topic:      "retry_orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: headers,
+	}
+
+	start := time.Now()
+	err = tracker.WaitForRetryTime(context.Background(), msg)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	// Should wait at least 500ms (second granularity means we might wait less than 1.5s)
+	assert.GreaterOrEqual(t, elapsed, 500*time.Millisecond, "Should wait for the scheduled time")
+	assert.Less(t, elapsed, 2*time.Second, "Should not wait too long")
+}
+
+func TestErrorTracker_WaitForRetryTime_ContextCancellation_ReturnsError(t *testing.T) {
+	// If context is cancelled during wait, should return context error
+	cfg := newTestConfig()
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+		},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	// Set retry time to 5 seconds in the future
+	futureTime := time.Now().Add(5 * time.Second)
+	headers := &HeaderList{}
+	_ = SetHeader[time.Time](headers, HeaderRetryNextTime, futureTime)
+
+	msg := &InternalMessage{
+		topic:      "retry_orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: headers,
+	}
+
+	// Cancel context after 50ms
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err = tracker.WaitForRetryTime(ctx, msg)
+	elapsed := time.Since(start)
+
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded), "Should return context error")
+	assert.Less(t, elapsed, 200*time.Millisecond, "Should return quickly after context cancellation")
+}
+
+func TestErrorTracker_WaitForRetryTime_CorruptedTimestamp_ReturnsImmediately(t *testing.T) {
+	// If timestamp header is corrupted, should log warning and return immediately
+	var warningLogged bool
+
+	cfg := newTestConfig()
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			WarnFunc: func(msg string, _ ...interface{}) {
+				if msg == "invalid retry timestamp header" {
+					warningLogged = true
+				}
+			},
+		},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	// Set corrupted timestamp header (not a valid Unix timestamp)
+	headers := &HeaderList{}
+	headers.Set(HeaderRetryNextTime, []byte("not-a-timestamp"))
+
+	msg := &InternalMessage{
+		topic:      "retry_orders",
+		KeyData:    []byte("order-1"),
+		HeaderData: headers,
+	}
+
+	start := time.Now()
+	err = tracker.WaitForRetryTime(context.Background(), msg)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Less(t, elapsed, 50*time.Millisecond, "Should return immediately with corrupted header")
+	assert.True(t, warningLogged, "Should log warning about invalid timestamp")
+}
+
+// --- ensureTopicsExist() Tests ---
+
+func TestErrorTracker_ensureTopicsExist_AutoCreationDisabled_MissingTopics_ReturnsError(t *testing.T) {
+	// When DisableAutoTopicCreation=true and topics don't exist, should return error
+	mockAdmin := &AdminMock{
+		DescribeTopicsFunc: func(_ context.Context, _ []string) ([]TopicMetadata, error) {
+			return []TopicMetadata{}, nil // No topics found
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.DisableAutoTopicCreation = true
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		mockAdmin,
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	err = tracker.ensureTopicsExist(context.Background(), "orders")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "required topics missing")
+	assert.Contains(t, err.Error(), "auto-creation disabled")
+}
+
+func TestErrorTracker_ensureTopicsExist_AutoCreationDisabled_TopicsExist_NoError(t *testing.T) {
+	// When DisableAutoTopicCreation=true and topics exist, should succeed
+	mockAdmin := &AdminMock{
+		DescribeTopicsFunc: func(_ context.Context, topics []string) ([]TopicMetadata, error) {
+			result := make([]TopicMetadata, 0, len(topics))
+			for _, t := range topics {
+				result = append(result, &topicMetadataMock{name: t, partitions: 3})
+			}
+			return result, nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.DisableAutoTopicCreation = true
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		mockAdmin,
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	err = tracker.ensureTopicsExist(context.Background(), "orders")
+
+	require.NoError(t, err)
+}
+
+func TestErrorTracker_ensureTopicsExist_AutoCreation_CreatesTopics(t *testing.T) {
+	// When auto-creation enabled, should create retry and DLQ topics
+	var (
+		createdTopics []string
+		mu            sync.Mutex
+	)
+
+	mockAdmin := &AdminMock{
+		DescribeTopicsFunc: func(_ context.Context, topics []string) ([]TopicMetadata, error) {
+			// Return metadata for primary topic only
+			if len(topics) == 1 && topics[0] == "orders" {
+				return []TopicMetadata{&topicMetadataMock{name: "orders", partitions: 6}}, nil
+			}
+			return []TopicMetadata{}, nil
+		},
+		CreateTopicFunc: func(_ context.Context, topic string, _ int32, _ int16, _ map[string]string) error {
+			mu.Lock()
+			createdTopics = append(createdTopics, topic)
+			mu.Unlock()
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.DisableAutoTopicCreation = false
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+		},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		mockAdmin,
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	err = tracker.ensureTopicsExist(context.Background(), "orders")
+
+	require.NoError(t, err)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Len(t, createdTopics, 2)
+	assert.Contains(t, createdTopics, "retry_orders")
+	assert.Contains(t, createdTopics, "dlq_orders")
+}
+
+func TestErrorTracker_ensureTopicsExist_UsesConfiguredPartitions(t *testing.T) {
+	// When RetryTopicPartitions is set in config, should use that instead of primary topic
+	var retryPartitions, dlqPartitions int32
+
+	mockAdmin := &AdminMock{
+		CreateTopicFunc: func(_ context.Context, topic string, partitions int32, _ int16, _ map[string]string) error {
+			if topic == "retry_orders" {
+				retryPartitions = partitions
+			} else if topic == "dlq_orders" {
+				dlqPartitions = partitions
+			}
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.RetryTopicPartitions = 12 // Explicitly set
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+		},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		mockAdmin,
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	err = tracker.ensureTopicsExist(context.Background(), "orders")
+
+	require.NoError(t, err)
+	assert.Equal(t, int32(12), retryPartitions)
+	assert.Equal(t, int32(12), dlqPartitions)
+}
+
+// topicMetadataMock implements TopicMetadata for tests
+type topicMetadataMock struct {
+	name       string
+	partitions int32
+}
+
+func (m *topicMetadataMock) Name() string                      { return m.name }
+func (m *topicMetadataMock) Partitions() int32                 { return m.partitions }
+func (m *topicMetadataMock) PartitionOffsets() map[int32]int64 { return nil }
+
+// --- NewResilientHandler() Tests ---
+
+func TestErrorTracker_NewResilientHandler_KeyInRetryChain_AutoRedirects(t *testing.T) {
+	// When a key is already in the retry chain, new messages should be auto-redirected
+	var (
+		userHandlerCalled bool
+		producedTopic     string
+	)
+
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, topic string, _ Message) error {
+			producedTopic = topic
+			return nil
+		},
+	}
+
+	mockCoordinator := &StateCoordinatorMock{
+		IsLockedFunc: func(_ context.Context, _ *InternalMessage) bool {
+			return true // Key is locked
+		},
+		AcquireFunc: func(_ context.Context, _ *InternalMessage, _ string) error {
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.MaxRetries = 5
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	// User handler that should NOT be called
+	userHandler := ConsumerHandlerFunc(func(_ context.Context, _ Message) error {
+		userHandlerCalled = true
+		return nil
+	})
+
+	resilientHandler := tracker.NewResilientHandler(userHandler)
+
+	msg := &InternalMessage{
+		topic:      "orders",
+		KeyData:    []byte("locked-key"),
+		HeaderData: &HeaderList{},
+	}
+
+	err = resilientHandler.Handle(context.Background(), msg)
+	require.NoError(t, err)
+
+	// User handler should NOT have been called (key is locked)
+	assert.False(t, userHandlerCalled, "User handler should not be called when key is in retry chain")
+
+	// Message should be redirected to retry topic
+	assert.Equal(t, "retry_orders", producedTopic)
+}
+
+func TestErrorTracker_NewResilientHandler_Success_NoLockManagement(t *testing.T) {
+	// On success, main topic messages don't need lock management
+	var userHandlerCalled bool
+
+	mockCoordinator := &StateCoordinatorMock{
+		IsLockedFunc: func(_ context.Context, _ *InternalMessage) bool {
+			return false // Key is NOT locked
+		},
+		ReleaseFunc: func(_ context.Context, _ *InternalMessage) error {
+			t.Error("Release should NOT be called for main topic messages")
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	userHandler := ConsumerHandlerFunc(func(_ context.Context, _ Message) error {
+		userHandlerCalled = true
+		return nil // Success
+	})
+
+	resilientHandler := tracker.NewResilientHandler(userHandler)
+
+	msg := &InternalMessage{
+		topic:      "orders",
+		KeyData:    []byte("new-key"),
+		HeaderData: &HeaderList{},
+	}
+
+	err = resilientHandler.Handle(context.Background(), msg)
+	require.NoError(t, err)
+
+	assert.True(t, userHandlerCalled)
+	// Release should NOT have been called
+	assert.Empty(t, mockCoordinator.ReleaseCalls())
+}
+
+func TestErrorTracker_NewResilientHandler_Failure_StartsRetryChain(t *testing.T) {
+	// On failure, message should be redirected to retry topic
+	var producedTopic string
+
+	mockProducer := &ProducerMock{
+		ProduceFunc: func(_ context.Context, topic string, _ Message) error {
+			producedTopic = topic
+			return nil
+		},
+	}
+
+	mockCoordinator := &StateCoordinatorMock{
+		IsLockedFunc: func(_ context.Context, _ *InternalMessage) bool {
+			return false // Key is NOT locked
+		},
+		AcquireFunc: func(_ context.Context, _ *InternalMessage, _ string) error {
+			return nil
+		},
+	}
+
+	cfg := newTestConfig()
+	cfg.MaxRetries = 5
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{
+			DebugFunc: func(_ string, _ ...interface{}) {},
+		},
+		mockProducer,
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		mockCoordinator,
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	userHandler := ConsumerHandlerFunc(func(_ context.Context, _ Message) error {
+		return errors.New("processing failed") // Failure
+	})
+
+	resilientHandler := tracker.NewResilientHandler(userHandler)
+
+	msg := &InternalMessage{
+		topic:      "orders",
+		KeyData:    []byte("failing-key"),
+		HeaderData: &HeaderList{},
+	}
+
+	err = resilientHandler.Handle(context.Background(), msg)
+	require.NoError(t, err) // Handler itself succeeds (redirects the message)
+
+	// Lock should have been acquired
+	assert.Len(t, mockCoordinator.AcquireCalls(), 1)
+
+	// Message should be redirected to retry topic
+	assert.Equal(t, "retry_orders", producedTopic)
+}
+
+// --- NewErrorTracker Validation Tests ---
+
+func TestNewErrorTracker_NilConfig_ReturnsError(t *testing.T) {
+	_, err := NewErrorTracker(
+		nil, // nil config
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config cannot be nil")
+}
+
+func TestNewErrorTracker_NilLogger_ReturnsError(t *testing.T) {
+	cfg := newTestConfig()
+
+	_, err := NewErrorTracker(
+		cfg,
+		nil, // nil logger
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "logger cannot be nil")
+}
+
+func TestNewErrorTracker_NilProducer_ReturnsError(t *testing.T) {
+	cfg := newTestConfig()
+
+	_, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		nil, // nil producer
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "producer cannot be nil")
+}
+
+func TestNewErrorTracker_NilConsumerFactory_ReturnsError(t *testing.T) {
+	cfg := newTestConfig()
+
+	_, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		&ProducerMock{},
+		nil, // nil consumerFactory
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "consumerFactory cannot be nil")
+}
+
+func TestNewErrorTracker_NilAdmin_ReturnsError(t *testing.T) {
+	cfg := newTestConfig()
+
+	_, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		nil, // nil admin
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "admin cannot be nil")
+}
+
+func TestNewErrorTracker_NilCoordinator_ReturnsError(t *testing.T) {
+	cfg := newTestConfig()
+
+	_, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		nil, // nil coordinator
+		&mockBackoff{},
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "coordinator cannot be nil")
+}
+
+func TestNewErrorTracker_NilBackoff_ReturnsError(t *testing.T) {
+	cfg := newTestConfig()
+
+	_, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		nil, // nil backoff
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "backoff strategy cannot be nil")
+}
+
+func TestNewErrorTracker_InvalidConfig_ReturnsError(t *testing.T) {
+	cfg := NewDefaultConfig()
+	// Missing GroupID makes config invalid
+
+	_, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GroupID")
+}
+
+// --- Topic Name Generation Tests ---
+
+func TestErrorTracker_TopicNames(t *testing.T) {
+	cfg := newTestConfig()
+	cfg.RetryTopicPrefix = "retry"
+	cfg.RedirectTopicPrefix = "redirect"
+	cfg.DLQTopicPrefix = "dlq"
+
+	tracker, err := NewErrorTracker(
+		cfg,
+		&LoggerMock{},
+		&ProducerMock{},
+		&ConsumerFactoryMock{},
+		&AdminMock{},
+		&StateCoordinatorMock{},
+		&mockBackoff{},
+	)
+	require.NoError(t, err)
+
+	assert.Equal(t, "retry_orders", tracker.RetryTopic("orders"))
+	assert.Equal(t, "redirect_orders", tracker.RedirectTopic("orders"))
+	assert.Equal(t, "dlq_orders", tracker.DLQTopic("orders"))
+
+	// Test with complex topic name
+	assert.Equal(t, "retry_user-events-v2", tracker.RetryTopic("user-events-v2"))
+	assert.Equal(t, "redirect_user-events-v2", tracker.RedirectTopic("user-events-v2"))
+	assert.Equal(t, "dlq_user-events-v2", tracker.DLQTopic("user-events-v2"))
 }

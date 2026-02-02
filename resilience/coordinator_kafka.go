@@ -378,7 +378,7 @@ func (k *KafkaStateCoordinator) Close(ctx context.Context) error {
 
 	k.mu.Unlock()
 
-	// Wait for workers with timeout
+	// wait for workers with timeout
 	done := make(chan struct{})
 
 	go func() {
@@ -425,11 +425,13 @@ func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic s
 		}
 	}
 
-	// segment.ms=100 ensures fast compaction for lock state visibility.
-	// Lower values = faster tombstone propagation, higher CPU usage.
+	// segment.ms=60000 (1 min) balances lock visibility with resource efficiency.
+	// Kafka default is 7 days; 1 minute ensures tombstones propagate quickly enough
+	// for lock releases while avoiding excessive segment rolling overhead.
+	// Acceptable for retry systems where backoffs are typically seconds-to-minutes.
 	return k.admin.CreateTopic(ctx, redirectTopic, partitions, k.cfg.ReplicationFactor, map[string]string{
 		"cleanup.policy": "compact",
-		"segment.ms":     "100", // TODO: make configurable?
+		"segment.ms":     "60000",
 	})
 }
 
@@ -651,7 +653,7 @@ func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
 
 	r.consumedOffsets[msg.Partition()] = msg.Offset()
 
-	// Check if all partitions have reached their target offset
+	// check if all partitions have reached their target offset
 	if isCaughtUpOffsets(r.consumedOffsets, r.targetOffsets) {
 		r.cancel()
 	}
