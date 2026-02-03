@@ -25,7 +25,6 @@ func TestIntegration_SaramaConsumer(t *testing.T) {
 
 	topic, groupID := newTestIDs("test-consumer")
 
-	// Create topic
 	admin, err := sarama.NewClusterAdmin([]string{sharedBroker}, newTestSaramaConfig())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = admin.Close() })
@@ -38,7 +37,6 @@ func TestIntegration_SaramaConsumer(t *testing.T) {
 
 	produceTestMessage(t, sharedBroker, topic, "key-1", "value-1")
 
-	// Create consumer
 	client := newTestClient(t)
 	factory := saramaadapter.NewConsumerFactory(client)
 	consumer, err := factory.NewConsumer(groupID)
@@ -82,7 +80,7 @@ func TestIntegration_SaramaConsumerRebalance(t *testing.T) {
 
 	topic, groupID := newTestIDs("test-rebalance")
 
-	// Create topic with 2 partitions to facilitate rebalancing
+	// create topic with 2 partitions to facilitate rebalancing
 	admin, err := sarama.NewClusterAdmin([]string{sharedBroker}, newTestSaramaConfig())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = admin.Close() })
@@ -93,7 +91,7 @@ func TestIntegration_SaramaConsumerRebalance(t *testing.T) {
 	}, false)
 	require.NoError(t, err)
 
-	// Create Consumer 1
+	// create Consumer 1
 	client1 := newTestClient(t)
 	factory1 := saramaadapter.NewConsumerFactory(client1)
 	consumer1, err := factory1.NewConsumer(groupID)
@@ -107,7 +105,7 @@ func TestIntegration_SaramaConsumerRebalance(t *testing.T) {
 	done1 := make(chan error, 1)
 	go func() { done1 <- consumer1.Consume(consumeCtx1, []string{topic}, handler1) }()
 
-	// Produce initial message and verify Consumer 1 receives it
+	// produce initial message and verify Consumer 1 receives it
 	produceTestMessage(t, sharedBroker, topic, "key-1", "value-1")
 	select {
 	case msg := <-handler1.received:
@@ -116,7 +114,7 @@ func TestIntegration_SaramaConsumerRebalance(t *testing.T) {
 		t.Fatal("timed out waiting for message 1")
 	}
 
-	// Create Consumer 2 in the same group to trigger rebalance
+	// create Consumer 2 in the same group to trigger rebalance
 	client2 := newTestClient(t)
 	factory2 := saramaadapter.NewConsumerFactory(client2)
 	consumer2, err := factory2.NewConsumer(groupID)
@@ -130,8 +128,8 @@ func TestIntegration_SaramaConsumerRebalance(t *testing.T) {
 	done2 := make(chan error, 1)
 	go func() { done2 <- consumer2.Consume(consumeCtx2, []string{topic}, handler2) }()
 
-	// Continuously produce messages until we confirm both consumers are active.
-	// This confirms that rebalance has completed and partitions are distributed.
+	// continuously produce messages until we confirm both consumers are active.
+	// this confirms that rebalance has completed and partitions are distributed.
 	bothActive := false
 	messagesSent := 0
 	timeout := time.After(60 * time.Second)
@@ -152,8 +150,8 @@ loop:
 				fmt.Sprintf("poll-%d", messagesSent),
 				fmt.Sprintf("value-%d", messagesSent))
 
-			// Check if both have received messages *total* (including initial one for C1)
-			// We want C1 > 1 (initial + at least one new) and C2 > 0
+			// check if both have received messages *total* (including initial one for C1)
+			// we want C1 > 1 (initial + at least one new) and C2 > 0
 			c1Count := handler1.count.Load()
 			c2Count := handler2.count.Load()
 
@@ -166,7 +164,7 @@ loop:
 
 	assert.True(t, bothActive, "both consumers should be active after rebalance")
 
-	// Verify Consumer 1 is still running (done1 hasn't received anything)
+	// verify Consumer 1 is still running (done1 hasn't received anything)
 	select {
 	case err := <-done1:
 		t.Fatalf("Consumer 1 stopped unexpectedly: %v", err)
@@ -190,7 +188,7 @@ func (h *integrationConsumerHandler) Handle(ctx context.Context, msg resilience.
 	select {
 	case h.received <- msg:
 	default:
-		// Channel full, just count it
+		// channel full, just count it
 	}
 
 	return nil

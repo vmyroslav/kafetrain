@@ -108,7 +108,7 @@ func TestAdminAdapter_DescribeTopics(t *testing.T) {
 		result, err := adapter.DescribeTopics(context.Background(), []string{"topic-1", "topic-with-error"})
 		require.NoError(t, err)
 
-		// Should only return the valid topic
+		// should only return the valid topic
 		require.Len(t, result, 1)
 		assert.Equal(t, "topic-1", result[0].Name())
 		assert.Equal(t, int32(2), result[0].Partitions())
