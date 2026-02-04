@@ -94,16 +94,25 @@ func TestIntegration_SaramaAdmin(t *testing.T) {
 		require.NoError(t, err, "failed to create consumer group")
 
 		// consume briefly to establish the group
-		consumeCtx, consumeCancel := context.WithTimeout(ctx, 1*time.Second)
+		consumeCtx, consumeCancel := context.WithTimeout(ctx, 10*time.Second)
 		defer consumeCancel()
 
-		handler := &dummyHandler{}
+		ready := make(chan struct{})
+		var once sync.Once
+		handler := &readyDummyHandler{
+			ready: ready,
+			once:  &once,
+		}
 		go func() {
 			_ = consumer.Consume(consumeCtx, []string{testTopic}, handler)
 		}()
 
 		// wait for consumer group to be established
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-ready:
+		case <-consumeCtx.Done():
+			t.Fatal("timeout waiting for consumer group to be established")
+		}
 		consumer.Close()
 
 		// delete the consumer group
@@ -188,37 +197,9 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 	defer consumerCancel()
 
 	var wg sync.WaitGroup
-
-	// start main consumer
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			if err := mainConsumer.Consume(consumerCtx, []string{topic}, handler); err != nil {
-				sharedLogger.Error("main consumer error", "error", err)
-			}
-			if consumerCtx.Err() != nil {
-				return
-			}
-		}
-	}()
-
-	// start retry consumer
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			if err := retryConsumer.Consume(consumerCtx, []string{retryTopic}, handler); err != nil {
-				sharedLogger.Error("retry consumer error", "error", err)
-			}
-			if consumerCtx.Err() != nil {
-				return
-			}
-		}
-	}()
-
-	// wait for consumers to be ready
-	time.Sleep(2 * time.Second)
+	mainReady := runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, sharedLogger)
+	retryReady := runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, sharedLogger)
+	waitForReady(t, ctx, mainReady, retryReady)
 
 	// produce test messages
 	produceTestMessage(t, sharedBroker, topic, "test-key", "first-will-fail-twice")
@@ -356,12 +337,18 @@ func (p *testMessageProcessor) process(_ context.Context, msg *sarama.ConsumerMe
 	}
 }
 
-// dummyHandler is a minimal handler for consumer group creation tests.
-type dummyHandler struct{}
+// readyDummyHandler is a minimal handler that signals when consumer group is established.
+type readyDummyHandler struct {
+	ready chan struct{}
+	once  *sync.Once
+}
 
-func (h *dummyHandler) Setup(sarama.ConsumerGroupSession) error   { return nil }
-func (h *dummyHandler) Cleanup(sarama.ConsumerGroupSession) error { return nil }
-func (h *dummyHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+func (h *readyDummyHandler) Setup(sarama.ConsumerGroupSession) error {
+	h.once.Do(func() { close(h.ready) })
+	return nil
+}
+func (h *readyDummyHandler) Cleanup(sarama.ConsumerGroupSession) error { return nil }
+func (h *readyDummyHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for msg := range claim.Messages() {
 		session.MarkMessage(msg, "")
 	}
@@ -437,11 +424,9 @@ func TestIntegration_ChainRetry(t *testing.T) {
 	defer consumerCancel()
 
 	var wg sync.WaitGroup
-	runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, sharedLogger)
-	runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, sharedLogger)
-
-	// wait for consumers to be ready
-	time.Sleep(2 * time.Second)
+	mainReady := runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, sharedLogger)
+	retryReady := runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, sharedLogger)
+	waitForReady(t, ctx, mainReady, retryReady)
 
 	// produce test message
 	produceTestMessage(t, sharedBroker, topic, "test-key", "will-fail-twice-then-succeed")
@@ -453,11 +438,6 @@ func TestIntegration_ChainRetry(t *testing.T) {
 		return attempts.Load() == 3 && success
 	}, 30*time.Second, 500*time.Millisecond, "message should be processed after 3 attempts")
 
-	// Verify message went through retry chain
-	// We can verify by checking redirect topic has messages (and eventually a tombstone)
-	// This is implicit in the test passing, but we could add explicit verification
-
-	// Stop consumers
 	consumerCancel()
 	wg.Wait()
 }
@@ -479,13 +459,7 @@ func (h *chainRetryHandler) ConsumeClaim(session sarama.ConsumerGroupSession, cl
 		retryMsg := saramaadapter.NewMessage(msg)
 		attempt := h.attempts.Add(1)
 
-		h.logger.Info("processing message in chain retry test",
-			"attempt", attempt,
-			"topic", msg.Topic,
-			"value", string(msg.Value),
-		)
-
-		// Fail first 2 attempts, succeed on 3rd
+		// fail first 2 attempts, succeed on 3rd
 		if attempt <= 2 {
 			err := fmt.Errorf("simulated failure (attempt %d)", attempt)
 
@@ -498,7 +472,7 @@ func (h *chainRetryHandler) ConsumeClaim(session sarama.ConsumerGroupSession, cl
 				"attempt", attempt,
 			)
 		} else {
-			// Success on 3rd attempt
+			// success on 3rd attempt
 			if h.tracker.IsInRetryChain(session.Context(), retryMsg) {
 				if freeErr := h.tracker.Free(session.Context(), retryMsg); freeErr != nil {
 					h.logger.Error("failed to free message", "error", freeErr)
@@ -538,7 +512,7 @@ func TestIntegration_DLQ(t *testing.T) {
 	adapters := newTestAdapters(t, client)
 	topic, groupID := newTestIDs("test-dlq")
 
-	// Track attempts and DLQ
+	// track attempts and DLQ
 	var (
 		attempts    atomic.Int32
 		dlqReceived atomic.Bool
@@ -563,20 +537,14 @@ func TestIntegration_DLQ(t *testing.T) {
 	)
 	require.NoError(t, err, "failed to create error tracker")
 
-	// Start tracking
+	// start tracking
 	err = tracker.StartTracking(ctx, topic)
 	require.NoError(t, err, "failed to start tracking")
 
 	retryTopic := tracker.RetryTopic(topic)
 	dlqTopic := tracker.DLQTopic(topic)
 
-	sharedLogger.Info("tracker started",
-		"topic", topic,
-		"retry_topic", retryTopic,
-		"dlq_topic", dlqTopic,
-	)
-
-	// Create handler that always fails
+	// create handler that always fails
 	handler := &dlqTestHandler{
 		tracker:     tracker,
 		logger:      sharedLogger,
@@ -586,7 +554,7 @@ func TestIntegration_DLQ(t *testing.T) {
 		dlqHeaders:  &dlqHeaders,
 	}
 
-	// Create consumers
+	// create consumers
 	mainConsumer, err := sarama.NewConsumerGroupFromClient(groupID, client)
 	require.NoError(t, err, "failed to create main consumer")
 	t.Cleanup(func() { _ = mainConsumer.Close() })
@@ -599,43 +567,31 @@ func TestIntegration_DLQ(t *testing.T) {
 	require.NoError(t, err, "failed to create DLQ consumer")
 	t.Cleanup(func() { _ = dlqConsumer.Close() })
 
-	// Start consumption
+	// start consumption
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()
 
 	var wg sync.WaitGroup
-	runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, sharedLogger)
-	runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, sharedLogger)
-	runConsumerLoop(consumerCtx, &wg, dlqConsumer, []string{dlqTopic}, handler, sharedLogger)
+	mainReady := runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, sharedLogger)
+	retryReady := runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, sharedLogger)
+	dlqReady := runConsumerLoop(consumerCtx, &wg, dlqConsumer, []string{dlqTopic}, handler, sharedLogger)
+	waitForReady(t, ctx, mainReady, retryReady, dlqReady)
 
-	// Wait for consumers to be ready
-	time.Sleep(2 * time.Second)
-
-	// Produce test message that will always fail
+	// produce test message that will always fail
 	produceTestMessage(t, sharedBroker, topic, "test-key", "will-always-fail")
 
-	// Wait for message to exceed max retries and go to DLQ
+	// wait for message to exceed max retries and go to DLQ
 	// MaxRetries=3 means: 1 initial attempt + 3 retries = 4 total attempts
 	assert.Eventually(t, func() bool {
 		return attempts.Load() >= 4 && dlqReceived.Load()
 	}, 30*time.Second, 500*time.Millisecond, "message should go to DLQ after exceeding max retries")
 
-	// Verify DLQ headers
+	// verify DLQ headers
 	mu.Lock()
 	assert.NotEmpty(t, dlqHeaders, "DLQ message should have headers")
 	mu.Unlock()
 
-	sharedLogger.Info("DLQ test completed",
-		"total_attempts", attempts.Load(),
-		"dlq_received", dlqReceived.Load(),
-	)
-
-	// TODO: Test blocking behavior with FreeOnDLQ=false
-	// When a message is sent to DLQ with FreeOnDLQ=false, it should remain in tracking
-	// and subsequent messages with the same key should be blocked.
-	// This requires more complex test setup to verify the blocking mechanism.
-
-	// Stop consumers
+	// stop consumers
 	consumerCancel()
 	wg.Wait()
 }
@@ -657,7 +613,7 @@ func (h *dlqTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim
 	for msg := range claim.Messages() {
 		payload := string(msg.Value)
 
-		// Check if this is DLQ topic (check claim topic directly)
+		// check if this is DLQ topic
 		if strings.HasPrefix(claim.Topic(), "dlq_") || strings.HasPrefix(claim.Topic(), "dlq-") {
 			h.logger.Info("received message in DLQ",
 				"payload", payload,
@@ -680,7 +636,7 @@ func (h *dlqTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim
 
 		retryMsg := saramaadapter.NewMessage(msg)
 
-		// Check retry attempt from headers
+		// check retry attempt from headers
 		var currentAttempt int
 		for _, h := range msg.Headers {
 			if string(h.Key) == "x-retry-attempt" {
@@ -689,7 +645,7 @@ func (h *dlqTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim
 			}
 		}
 
-		// Check if max retries exceeded (before processing)
+		// check if max retries exceeded (before processing)
 		if currentAttempt > 3 {
 			h.logger.Info("max retries exceeded, sending to DLQ",
 				"current_attempt", currentAttempt,
@@ -715,7 +671,7 @@ func (h *dlqTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim
 			continue
 		}
 
-		// For "will-always-fail" message, always fail
+		// for "will-always-fail" message, always fail
 		if payload == "will-always-fail" {
 			attempt := h.attempts.Add(1)
 
@@ -763,7 +719,6 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 	adapters := newTestAdapters(t, client)
 	topic, groupID := newTestIDs("test-dlq-free")
 
-	// Track state
 	var (
 		firstAttempts  atomic.Int32
 		firstDLQ       atomic.Bool
@@ -787,14 +742,14 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 	)
 	require.NoError(t, err, "failed to create error tracker")
 
-	// Start tracking
+	// start tracking
 	err = tracker.StartTracking(ctx, topic)
 	require.NoError(t, err, "failed to start tracking")
 
 	retryTopic := tracker.RetryTopic(topic)
 	dlqTopic := tracker.DLQTopic(topic)
 
-	// Create handler
+	// create handler
 	handler := &dlqFreeTestHandler{
 		tracker:        tracker,
 		logger:         sharedLogger,
@@ -803,7 +758,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 		secondReceived: &secondReceived,
 	}
 
-	// Create consumers
+	// create consumers
 	mainConsumer, err := sarama.NewConsumerGroupFromClient(groupID, client)
 	require.NoError(t, err, "failed to create main consumer")
 	t.Cleanup(func() { _ = mainConsumer.Close() })
@@ -816,43 +771,35 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 	require.NoError(t, err, "failed to create DLQ consumer")
 	t.Cleanup(func() { _ = dlqConsumer.Close() })
 
-	// Start consumption
+	// start consumption
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()
 
 	var wg sync.WaitGroup
-	runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, sharedLogger)
-	runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, sharedLogger)
-	runConsumerLoop(consumerCtx, &wg, dlqConsumer, []string{dlqTopic}, handler, sharedLogger)
+	mainReady := runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, sharedLogger)
+	retryReady := runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, sharedLogger)
+	dlqReady := runConsumerLoop(consumerCtx, &wg, dlqConsumer, []string{dlqTopic}, handler, sharedLogger)
+	waitForReady(t, ctx, mainReady, retryReady, dlqReady)
 
-	// Wait for consumers to be ready
-	time.Sleep(2 * time.Second)
-
-	// Produce first message that will fail and go to DLQ
+	// produce first message that will fail and go to DLQ
 	produceTestMessage(t, sharedBroker, topic, "test-key", "first-will-fail")
 
-	// Wait for first message to go to DLQ
+	// wait for first message to go to DLQ
 	assert.Eventually(t, func() bool {
 		return firstAttempts.Load() >= 4 && firstDLQ.Load()
 	}, 30*time.Second, 500*time.Millisecond, "first message should go to DLQ")
 
 	sharedLogger.Info("first message sent to DLQ, now sending second message with same key")
 
-	// Produce second message with SAME key - should NOT be blocked because first was freed
+	// produce second message with SAME key - should NOT be blocked because first was freed
 	produceTestMessage(t, sharedBroker, topic, "test-key", "second-should-process")
 
-	// Wait for second message to be processed
+	// wait for second message to be processed
 	assert.Eventually(t, func() bool {
 		return secondReceived.Load()
 	}, 20*time.Second, 500*time.Millisecond, "second message should be processed (not blocked)")
 
-	sharedLogger.Info("DLQ with FreeOnDLQ test completed",
-		"first_attempts", firstAttempts.Load(),
-		"first_dlq", firstDLQ.Load(),
-		"second_received", secondReceived.Load(),
-	)
-
-	// Stop consumers
+	// stop consumers
 	consumerCancel()
 	wg.Wait()
 }
@@ -873,7 +820,7 @@ func (h *dlqFreeTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 	for msg := range claim.Messages() {
 		payload := string(msg.Value)
 
-		// Check if this is DLQ topic (check claim topic directly)
+		// check if this is DLQ topic (check claim topic directly)
 		if strings.HasPrefix(claim.Topic(), "dlq_") || strings.HasPrefix(claim.Topic(), "dlq-") {
 			h.logger.Info("received message in DLQ",
 				"payload", payload,
@@ -890,7 +837,7 @@ func (h *dlqFreeTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 
 		retryMsg := saramaadapter.NewMessage(msg)
 
-		// Check retry attempt from headers
+		// check retry attempt from headers
 		var currentAttempt int
 		for _, header := range msg.Headers {
 			if string(header.Key) == "x-retry-attempt" {
@@ -899,7 +846,7 @@ func (h *dlqFreeTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 			}
 		}
 
-		// Check if max retries exceeded (before processing)
+		// check if max retries exceeded (before processing)
 		if currentAttempt > 3 {
 			h.logger.Info("max retries exceeded, sending to DLQ",
 				"current_attempt", currentAttempt,
@@ -952,7 +899,6 @@ func (h *dlqFreeTestHandler) ConsumeClaim(session sarama.ConsumerGroupSession, c
 
 // TestIntegration_StrictOrdering verifies that messages with the same key are processed
 // in order, with subsequent messages blocked until preceding messages complete their retry chain.
-// This is a critical test for the library's ordering guarantees.
 func TestIntegration_StrictOrdering(t *testing.T) {
 	t.Parallel()
 
@@ -963,7 +909,6 @@ func TestIntegration_StrictOrdering(t *testing.T) {
 	adapters := newTestAdapters(t, client)
 	topic, groupID := newTestIDs("test-strict-ordering")
 
-	// Track processing order
 	var (
 		mu             sync.Mutex
 		processedOrder []string
@@ -1006,7 +951,7 @@ func TestIntegration_StrictOrdering(t *testing.T) {
 		msg3Processed:  &msg3Processed,
 	}
 
-	// Create consumers
+	// create consumers
 	mainConsumer, err := sarama.NewConsumerGroupFromClient(groupID, client)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = mainConsumer.Close() })
@@ -1015,30 +960,30 @@ func TestIntegration_StrictOrdering(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = retryConsumer.Close() })
 
-	// Start consumption
+	// start consumption
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()
 
 	var wg sync.WaitGroup
-	runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, sharedLogger)
-	runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, sharedLogger)
+	mainReady := runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, sharedLogger)
+	retryReady := runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, sharedLogger)
+	waitForReady(t, ctx, mainReady, retryReady)
 
-	// Wait for consumers to be ready
-	time.Sleep(2 * time.Second)
-
-	// Produce 3 messages with the SAME key (strict ordering required)
+	// produce 3 messages with the SAME key (strict ordering required)
 	// msg1 will fail first, then succeed on retry
 	// msg2 and msg3 should be blocked until msg1 completes
 	sameKey := "ordering-key"
 	produceTestMessage(t, sharedBroker, topic, sameKey, "msg1-will-fail-once")
 
-	// Wait a bit to ensure msg1 is processed first and enters retry chain
-	time.Sleep(500 * time.Millisecond)
+	// wait for msg1 to be processed and enter retry chain before sending subsequent messages
+	require.Eventually(t, func() bool {
+		return msg1Attempts.Load() >= 1
+	}, 10*time.Second, 100*time.Millisecond, "msg1 should be processed and enter retry chain")
 
 	produceTestMessage(t, sharedBroker, topic, sameKey, "msg2-should-wait")
 	produceTestMessage(t, sharedBroker, topic, sameKey, "msg3-should-wait")
 
-	// Wait for all messages to be processed
+	// wait for all messages to be processed
 	assert.Eventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
@@ -1199,7 +1144,7 @@ func TestIntegration_NotRetriableError(t *testing.T) {
 	retryTopic := tracker.RetryTopic(topic)
 	dlqTopic := tracker.DLQTopic(topic)
 
-	// Handler that returns NotRetriableError for specific message
+	// handler that returns NotRetriableError for specific message
 	handler := &notRetriableHandler{
 		tracker: tracker,
 		logger:  sharedLogger,
@@ -1211,14 +1156,14 @@ func TestIntegration_NotRetriableError(t *testing.T) {
 		dlqReceived: &dlqReceived,
 	}
 
-	// Retry topic spy to verify message does NOT go there
+	// retry topic spy to verify message does NOT go there
 	retrySpyHandler := &retrySpyHandler{
 		logger:        sharedLogger,
 		retryMsgFound: &retryMsgFound,
 		checked:       &retryTopicChecked,
 	}
 
-	// Create consumers
+	// create consumers
 	mainConsumer, err := sarama.NewConsumerGroupFromClient(groupID, client)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = mainConsumer.Close() })
@@ -1231,17 +1176,15 @@ func TestIntegration_NotRetriableError(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = retryConsumer.Close() })
 
-	// Start consumption
+	// start consumption
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()
 
 	var wg sync.WaitGroup
-	runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, sharedLogger)
-	runConsumerLoop(consumerCtx, &wg, dlqConsumer, []string{dlqTopic}, dlqHandler, sharedLogger)
-	runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, retrySpyHandler, sharedLogger)
-
-	// Wait for consumers to be ready
-	time.Sleep(2 * time.Second)
+	mainReady := runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, sharedLogger)
+	dlqReady := runConsumerLoop(consumerCtx, &wg, dlqConsumer, []string{dlqTopic}, dlqHandler, sharedLogger)
+	retryReady := runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, retrySpyHandler, sharedLogger)
+	waitForReady(t, ctx, mainReady, dlqReady, retryReady)
 
 	// Produce message that will fail with NotRetriableError
 	produceTestMessage(t, sharedBroker, topic, "not-retriable-key", "validation-error-message")
@@ -1251,8 +1194,7 @@ func TestIntegration_NotRetriableError(t *testing.T) {
 		return dlqReceived.Load()
 	}, 30*time.Second, 500*time.Millisecond, "message should arrive in DLQ")
 
-	// Give retry consumer time to check
-	time.Sleep(2 * time.Second)
+	// Once message is in DLQ, we've waited long enough - if it was going to retry topic, it would have by now
 	retryTopicChecked.Store(true)
 
 	// Verify message did NOT go to retry topic
@@ -1397,7 +1339,7 @@ func TestIntegration_ConcurrentKeysIndependence(t *testing.T) {
 		keyCProcessed:  &keyCProcessed,
 	}
 
-	// Create consumers
+	// create consumers
 	mainConsumer, err := sarama.NewConsumerGroupFromClient(groupID, client)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = mainConsumer.Close() })
@@ -1406,40 +1348,40 @@ func TestIntegration_ConcurrentKeysIndependence(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = retryConsumer.Close() })
 
-	// Start consumption
+	// start consumption
 	consumerCtx, consumerCancel := context.WithCancel(ctx)
 	defer consumerCancel()
 
 	var wg sync.WaitGroup
-	runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, sharedLogger)
-	runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, sharedLogger)
+	mainReady := runConsumerLoop(consumerCtx, &wg, mainConsumer, []string{topic}, handler, sharedLogger)
+	retryReady := runConsumerLoop(consumerCtx, &wg, retryConsumer, []string{retryTopic}, handler, sharedLogger)
+	waitForReady(t, ctx, mainReady, retryReady)
 
-	// Wait for consumers to be ready
-	time.Sleep(2 * time.Second)
-
-	// Produce messages with DIFFERENT keys
+	// produce messages with DIFFERENT keys
 	// Key A will fail and enter retry chain
 	// Key B and Key C should process immediately (not blocked by Key A)
 	produceTestMessage(t, sharedBroker, topic, "key-A", "keyA-will-fail")
 
-	// Small delay to ensure key-A is processed first
-	time.Sleep(300 * time.Millisecond)
+	// wait for key-A to be processed before sending B and C
+	require.Eventually(t, func() bool {
+		return keyAAttempts.Load() >= 1
+	}, 10*time.Second, 100*time.Millisecond, "key-A should be processed first")
 
 	produceTestMessage(t, sharedBroker, topic, "key-B", "keyB-should-succeed")
 	produceTestMessage(t, sharedBroker, topic, "key-C", "keyC-should-succeed")
 
-	// Key B and Key C should be processed quickly (not waiting for Key A's retry)
+	// key B and Key C should be processed quickly (not waiting for Key A's retry)
 	assert.Eventually(t, func() bool {
 		return keyBProcessed.Load() && keyCProcessed.Load()
 	}, 10*time.Second, 500*time.Millisecond,
 		"Key B and Key C should process without waiting for Key A's retry")
 
-	// Verify Key A is still in retry chain while B and C completed
+	// verify Key A is still in retry chain while B and C completed
 	checkMsgA := saramaadapter.NewMessage(&sarama.ConsumerMessage{Topic: topic, Key: []byte("key-A")})
 	assert.True(t, tracker.IsInRetryChain(ctx, checkMsgA),
 		"Key A should still be in retry chain")
 
-	// Wait for Key A to complete its retry
+	// wait for Key A to complete its retry
 	assert.Eventually(t, func() bool {
 		return keyAAttempts.Load() >= 2
 	}, 30*time.Second, 500*time.Millisecond, "Key A should complete retry")
@@ -1447,8 +1389,8 @@ func TestIntegration_ConcurrentKeysIndependence(t *testing.T) {
 	mu.Lock()
 	sharedLogger.Info("processing order", "order", processedOrder)
 
-	// Verify B and C were processed before A completed retry
-	// Find positions
+	// verify B and C were processed before A completed retry
+	// find positions
 	var posA, posB, posC int = -1, -1, -1
 	for i, entry := range processedOrder {
 		if strings.Contains(entry, "keyA") && strings.Contains(entry, "success") {

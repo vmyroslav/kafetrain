@@ -153,15 +153,22 @@ func newTestIDs(prefix string) (topic, groupID string) {
 }
 
 // runConsumerLoop starts a consumer in a goroutine that restarts on errors.
+// Returns a channel that closes when consumer is ready (Setup called = joined group and got partitions).
 // The goroutine exits when ctx is cancelled.
 func runConsumerLoop(ctx context.Context, wg *sync.WaitGroup, consumer sarama.ConsumerGroup,
 	topics []string, handler sarama.ConsumerGroupHandler, logger *slog.Logger,
-) {
+) <-chan struct{} {
+	ready := make(chan struct{})
+	wrapped := &readyHandler{
+		handler: handler,
+		ready:   ready,
+	}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		for {
-			if err := consumer.Consume(ctx, topics, handler); err != nil {
+			if err := consumer.Consume(ctx, topics, wrapped); err != nil {
 				logger.Error("consumer error", "error", err)
 			}
 			if ctx.Err() != nil {
@@ -169,4 +176,38 @@ func runConsumerLoop(ctx context.Context, wg *sync.WaitGroup, consumer sarama.Co
 			}
 		}
 	}()
+
+	return ready
+}
+
+// readyHandler wraps a ConsumerGroupHandler and signals when Setup is called.
+type readyHandler struct {
+	handler sarama.ConsumerGroupHandler
+	ready   chan struct{}
+	once    sync.Once
+}
+
+func (h *readyHandler) Setup(session sarama.ConsumerGroupSession) error {
+	h.once.Do(func() { close(h.ready) })
+	return h.handler.Setup(session)
+}
+
+func (h *readyHandler) Cleanup(session sarama.ConsumerGroupSession) error {
+	return h.handler.Cleanup(session)
+}
+
+func (h *readyHandler) ConsumeClaim(session sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	return h.handler.ConsumeClaim(session, claim)
+}
+
+// waitForReady waits for all provided ready channels to close or fails on context timeout.
+func waitForReady(t *testing.T, ctx context.Context, readyChans ...<-chan struct{}) {
+	t.Helper()
+	for i, ready := range readyChans {
+		select {
+		case <-ready:
+		case <-ctx.Done():
+			t.Fatalf("timeout waiting for consumer %d to be ready", i)
+		}
+	}
 }
