@@ -144,31 +144,6 @@ func newTestAdapters(t *testing.T, client sarama.Client) *testAdapters {
 	}
 }
 
-// newTestTracker creates an ErrorTracker with standard test configuration.
-// Cleanup is automatic via t.Cleanup.
-func newTestTracker(t *testing.T, groupID string, adapters *testAdapters) *resilience.ErrorTracker {
-	t.Helper()
-
-	cfg := resilience.NewDefaultConfig()
-	cfg.GroupID = groupID
-	cfg.MaxRetries = 3
-	cfg.RetryTopicPartitions = 1
-
-	errCh := make(chan error, 10)
-	coordinator := resilience.NewKafkaStateCoordinator(
-		cfg, sharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin, errCh,
-	)
-
-	tracker, err := resilience.NewErrorTracker(
-		cfg, sharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
-		coordinator, resilience.NewExponentialBackoff(),
-	)
-	require.NoError(t, err)
-
-	t.Cleanup(func() { _ = tracker.Close(context.Background()) })
-	return tracker
-}
-
 // newTestIDs generates unique topic and group IDs for a test.
 func newTestIDs(prefix string) (topic, groupID string) {
 	suffix := time.Now().UnixNano()

@@ -617,13 +617,16 @@ func TestErrorTracker_Redirect_PreservesUserHeaders(t *testing.T) {
 
 func TestErrorTracker_Redirect_PreservesOriginalTopic(t *testing.T) {
 	// When redirecting from retry topic, the original topic should be preserved
-	var producedMsg Message
-	var producedTopic string
+	var (
+		producedMsg   Message
+		producedTopic string
+	)
 
 	mockProducer := &ProducerMock{
 		ProduceFunc: func(_ context.Context, topic string, msg Message) error {
 			producedTopic = topic
 			producedMsg = msg
+
 			return nil
 		},
 	}
@@ -915,13 +918,16 @@ func TestErrorTracker_Free_WithMissingHeaders_StillCallsRelease(t *testing.T) {
 // --- SendToDLQ() Tests ---
 
 func TestErrorTracker_SendToDLQ_HappyPath(t *testing.T) {
-	var producedTopic string
-	var producedMsg Message
+	var (
+		producedTopic string
+		producedMsg   Message
+	)
 
 	mockProducer := &ProducerMock{
 		ProduceFunc: func(_ context.Context, topic string, msg Message) error {
 			producedTopic = topic
 			producedMsg = msg
+
 			return nil
 		},
 	}
@@ -956,7 +962,7 @@ func TestErrorTracker_SendToDLQ_HappyPath(t *testing.T) {
 	assert.Equal(t, "dlq_orders", producedTopic)
 
 	// Should preserve payload
-	assert.Equal(t, []byte(`{"order": "data"}`), producedMsg.Value())
+	assert.JSONEq(t, `{"order": "data"}`, string(producedMsg.Value()))
 
 	// Should have DLQ headers
 	headers := producedMsg.Headers()
@@ -1357,7 +1363,7 @@ func TestErrorTracker_WaitForRetryTime_FutureTime_Waits(t *testing.T) {
 }
 
 func TestErrorTracker_WaitForRetryTime_ContextCancellation_ReturnsError(t *testing.T) {
-	// If context is cancelled during wait, should return context error
+	// If context is canceled during wait, should return context error
 	cfg := newTestConfig()
 	tracker, err := NewErrorTracker(
 		cfg,
@@ -1392,7 +1398,7 @@ func TestErrorTracker_WaitForRetryTime_ContextCancellation_ReturnsError(t *testi
 	elapsed := time.Since(start)
 
 	require.Error(t, err)
-	assert.True(t, errors.Is(err, context.DeadlineExceeded), "Should return context error")
+	require.ErrorIs(t, err, context.DeadlineExceeded, "Should return context error")
 	assert.Less(t, elapsed, 200*time.Millisecond, "Should return quickly after context cancellation")
 }
 
@@ -1476,6 +1482,7 @@ func TestErrorTracker_ensureTopicsExist_AutoCreationDisabled_TopicsExist_NoError
 			for _, t := range topics {
 				result = append(result, &topicMetadataMock{name: t, partitions: 3})
 			}
+
 			return result, nil
 		},
 	}
@@ -1512,12 +1519,16 @@ func TestErrorTracker_ensureTopicsExist_AutoCreation_CreatesTopics(t *testing.T)
 			if len(topics) == 1 && topics[0] == "orders" {
 				return []TopicMetadata{&topicMetadataMock{name: "orders", partitions: 6}}, nil
 			}
+
 			return []TopicMetadata{}, nil
 		},
 		CreateTopicFunc: func(_ context.Context, topic string, _ int32, _ int16, _ map[string]string) error {
 			mu.Lock()
+
 			createdTopics = append(createdTopics, topic)
+
 			mu.Unlock()
+
 			return nil
 		},
 	}
@@ -1541,8 +1552,10 @@ func TestErrorTracker_ensureTopicsExist_AutoCreation_CreatesTopics(t *testing.T)
 	err = tracker.ensureTopicsExist(context.Background(), "orders")
 
 	require.NoError(t, err)
+
 	mu.Lock()
 	defer mu.Unlock()
+
 	assert.Len(t, createdTopics, 2)
 	assert.Contains(t, createdTopics, "retry_orders")
 	assert.Contains(t, createdTopics, "dlq_orders")
@@ -1554,11 +1567,13 @@ func TestErrorTracker_ensureTopicsExist_UsesConfiguredPartitions(t *testing.T) {
 
 	mockAdmin := &AdminMock{
 		CreateTopicFunc: func(_ context.Context, topic string, partitions int32, _ int16, _ map[string]string) error {
-			if topic == "retry_orders" {
+			switch topic {
+			case "retry_orders":
 				retryPartitions = partitions
-			} else if topic == "dlq_orders" {
+			case "dlq_orders":
 				dlqPartitions = partitions
 			}
+
 			return nil
 		},
 	}

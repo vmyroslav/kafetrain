@@ -57,7 +57,7 @@ func TestLocalStateCoordinator_ReferenceCounting(t *testing.T) {
 	coordinator := NewLocalStateCoordinator()
 	ctx := t.Context()
 
-	topic := "orders"
+	topic := testTopicOrders
 	key := "ref-key"
 	msg := &InternalMessage{topic: topic, KeyData: []byte(key), HeaderData: &HeaderList{}}
 
