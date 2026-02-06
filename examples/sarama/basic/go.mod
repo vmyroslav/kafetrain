@@ -1,4 +1,4 @@
-module examples/sarama
+module github.com/vmyroslav/kafka-resilience/examples/sarama/basic
 
 go 1.25
 
@@ -33,6 +33,6 @@ require (
 )
 
 replace (
-	github.com/vmyroslav/kafka-resilience => ../../
-	github.com/vmyroslav/kafka-resilience/adapter/sarama => ../../adapter/sarama
+	github.com/vmyroslav/kafka-resilience => ../../../
+	github.com/vmyroslav/kafka-resilience/adapter/sarama => ../../../adapter/sarama
 )

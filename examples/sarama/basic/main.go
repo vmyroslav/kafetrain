@@ -1,3 +1,6 @@
+// Package main demonstrates automatic retry handling with kafka-resilience.
+// This is the default pattern for most use cases.
+// The library manages the retry worker and handles Redirect/Free calls internally.
 package main
 
 import (
@@ -30,7 +33,7 @@ func main() {
 	slog.Info("Starting Kafka Resilience Sarama Example")
 	slog.Info("Configuration", "brokers", brokers)
 
-	// 1. Setup Sarama Client (Standard)
+	// 1. Setup Sarama Client
 	config := sarama.NewConfig()
 	config.Version = sarama.V4_1_0_0
 	config.Consumer.Offsets.Initial = sarama.OffsetOldest

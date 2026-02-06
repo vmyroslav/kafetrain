@@ -131,7 +131,7 @@ func (t *ErrorTracker) Start(ctx context.Context, topic string, handler Consumer
 	// background workers use the same derived context
 	t.wg.Add(1)
 
-	return t.StartRetryWorker(workerCtx, topic, handler)
+	return t.startRetryWorker(workerCtx, topic, handler)
 }
 
 // Close gracefully shuts down all background workers and releases resources.
@@ -245,10 +245,10 @@ func (t *ErrorTracker) ensureTopicsExist(ctx context.Context, topic string) erro
 	return g.Wait()
 }
 
-// StartRetryWorker starts a background consumer for the retry topic.
+// startRetryWorker starts a background consumer for the retry topic.
 // This worker automatically handles backoff delays, retries, and lifecycle management (Redirect/Free).
 // It implements the Bulkhead Pattern, keeping retry processing separate from the main consumer.
-func (t *ErrorTracker) StartRetryWorker(ctx context.Context, topic string, handler ConsumerHandler) error {
+func (t *ErrorTracker) startRetryWorker(ctx context.Context, topic string, handler ConsumerHandler) error {
 	// ensure retry/dlq topics exist
 	if err := t.ensureTopicsExist(ctx, topic); err != nil {
 		return err
@@ -335,12 +335,13 @@ func (h *retryWorkerHandler) Handle(ctx context.Context, msg Message) error {
 	return h.t.Free(ctx, msg)
 }
 
-// StartTracking starts only the coordination layer (control plane) for the topic.
-// This is a lightweight alternative to Start() when you want to manage retry workers
-// manually. It ensures topics exist and initializes the coordinator for lock management.
-// Use this when you need Redirect/Free/IsInRetryChain functionality without the
-// automatic retry worker. This is a blocking call during coordinator startup.
-func (t *ErrorTracker) StartTracking(ctx context.Context, topic string) error {
+// StartCoordinator starts only the coordination layer (control plane) for the topic.
+// Use this when you want to manage retry consumers manually while still using
+// Redirect/Free/IsInRetryChain for lock management. This is a blocking call
+// during coordinator startup (state restoration from redirect topic).
+//
+// For automatic retry handling, use Start() instead.
+func (t *ErrorTracker) StartCoordinator(ctx context.Context, topic string) error {
 	// ensure topics exist
 	if err := t.ensureTopicsExist(ctx, topic); err != nil {
 		return err

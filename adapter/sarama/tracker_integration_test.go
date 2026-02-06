@@ -157,7 +157,7 @@ func TestIntegration_SaramaAdapterFullFlow(t *testing.T) {
 	require.NoError(t, err, "failed to create error tracker")
 
 	// start tracking - this should create topics
-	err = tracker.StartTracking(ctx, topic)
+	err = tracker.StartCoordinator(ctx, topic)
 	require.NoError(t, err, "failed to start tracking")
 
 	sharedLogger.Info("tracker started, topics should be created")
@@ -395,7 +395,7 @@ func TestIntegration_ChainRetry(t *testing.T) {
 	require.NoError(t, err, "failed to create error tracker")
 
 	// start tracking
-	err = tracker.StartTracking(ctx, topic)
+	err = tracker.StartCoordinator(ctx, topic)
 	require.NoError(t, err, "failed to start tracking")
 
 	retryTopic := tracker.RetryTopic(topic)
@@ -538,7 +538,7 @@ func TestIntegration_DLQ(t *testing.T) {
 	require.NoError(t, err, "failed to create error tracker")
 
 	// start tracking
-	err = tracker.StartTracking(ctx, topic)
+	err = tracker.StartCoordinator(ctx, topic)
 	require.NoError(t, err, "failed to start tracking")
 
 	retryTopic := tracker.RetryTopic(topic)
@@ -743,7 +743,7 @@ func TestIntegration_DLQ_WithFreeOnDLQ(t *testing.T) {
 	require.NoError(t, err, "failed to create error tracker")
 
 	// start tracking
-	err = tracker.StartTracking(ctx, topic)
+	err = tracker.StartCoordinator(ctx, topic)
 	require.NoError(t, err, "failed to start tracking")
 
 	retryTopic := tracker.RetryTopic(topic)
@@ -933,7 +933,7 @@ func TestIntegration_StrictOrdering(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	err = tracker.StartTracking(ctx, topic)
+	err = tracker.StartCoordinator(ctx, topic)
 	require.NoError(t, err)
 
 	retryTopic := tracker.RetryTopic(topic)
@@ -1138,7 +1138,7 @@ func TestIntegration_NotRetriableError(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	err = tracker.StartTracking(ctx, topic)
+	err = tracker.StartCoordinator(ctx, topic)
 	require.NoError(t, err)
 
 	retryTopic := tracker.RetryTopic(topic)
@@ -1324,7 +1324,7 @@ func TestIntegration_ConcurrentKeysIndependence(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	err = tracker.StartTracking(ctx, topic)
+	err = tracker.StartCoordinator(ctx, topic)
 	require.NoError(t, err)
 
 	retryTopic := tracker.RetryTopic(topic)

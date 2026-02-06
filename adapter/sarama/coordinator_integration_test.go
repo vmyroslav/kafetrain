@@ -403,7 +403,7 @@ func TestIntegration_RestartRestoration(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	err = tracker1.StartTracking(ctx, topic)
+	err = tracker1.StartCoordinator(ctx, topic)
 	require.NoError(t, err)
 
 	keyLocked := "key-locked"
@@ -473,7 +473,7 @@ func TestIntegration_RestartRestoration(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	err = tracker2.StartTracking(ctx, topic)
+	err = tracker2.StartCoordinator(ctx, topic)
 	require.NoError(t, err)
 
 	// -------------------------------------------------------------------------
@@ -524,7 +524,7 @@ func TestIntegration_TombstoneRestoration(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	err = tracker1.StartTracking(ctx, topic)
+	err = tracker1.StartCoordinator(ctx, topic)
 	require.NoError(t, err)
 
 	// redirect message (locks the key)
@@ -561,7 +561,7 @@ func TestIntegration_TombstoneRestoration(t *testing.T) {
 	require.NoError(t, err)
 
 	sharedLogger.Info("Starting tracker2 to verify restoration")
-	err = tracker2.StartTracking(ctx, topic)
+	err = tracker2.StartCoordinator(ctx, topic)
 	require.NoError(t, err)
 
 	// verify tombstone was correctly processed
