@@ -53,4 +53,4 @@ resilientHandler := tracker.NewResilientHandler(handler)
 consumer.Consume(ctx, []string{topic}, resilientHandler)
 ```
 
-See also: [manual](../manual/) for more granular control, [strict](../strict/) for strict consistency.
+See also: [granular](../granular/) for more granular control, [strict](../strict/) for strict consistency.

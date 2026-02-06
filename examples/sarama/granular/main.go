@@ -1,6 +1,6 @@
-// Package main demonstrates manual retry handling with kafka-resilience.
+// Package main demonstrates granular control over retry handling.
 // The user manages both main and retry consumers explicitly,
-// calling Redirect() and Free() manually for full control.
+// calling Redirect() and Free() for full control.
 package main
 
 import (
