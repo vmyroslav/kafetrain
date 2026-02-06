@@ -27,7 +27,7 @@ func main() {
 
 	// 2. Setup Sarama Client
 	saramaConfig := sarama.NewConfig()
-	saramaConfig.Version = sarama.V3_6_0_0
+	saramaConfig.Version = sarama.V4_1_0_0
 	saramaConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
 	saramaConfig.Consumer.Return.Errors = true
 	saramaConfig.Producer.Return.Successes = true

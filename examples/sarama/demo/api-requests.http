@@ -1,0 +1,87 @@
+### Kafka Resilience Demo API Requests
+
+### Produce Messages
+
+# Send a message that succeeds
+POST http://localhost:8080/produce
+Content-Type: application/json
+
+{
+  "key": "order-1",
+  "value": "item-data"
+}
+
+###
+
+# Send a message that will fail (triggers retry)
+POST http://localhost:8080/produce
+Content-Type: application/json
+
+{
+  "key": "order-2",
+  "value": "item-data",
+  "fail": true
+}
+
+###
+
+### Verify Ordering Guarantees
+
+# Step 1: Send a failing message (key gets locked)
+POST http://localhost:8080/produce
+Content-Type: application/json
+
+{
+  "key": "A",
+  "value": "first",
+  "fail": true
+}
+
+###
+
+# Step 2: Send another message for the same key (will be queued behind the retry)
+POST http://localhost:8080/produce
+Content-Type: application/json
+
+{
+  "key": "A",
+  "value": "second"
+}
+
+###
+
+### Failure Control
+
+# Make a key fail on next processing attempt
+POST http://localhost:8080/fail
+Content-Type: application/json
+
+{
+  "key": "order-3",
+  "fail": true
+}
+
+###
+
+# Clear fail flag for a key
+POST http://localhost:8080/fail
+Content-Type: application/json
+
+{
+  "key": "order-3",
+  "fail": false
+}
+
+###
+
+### Inspect State
+
+# Check which keys are currently locked (in retry chain)
+GET http://localhost:8080/locks
+Accept: application/json
+
+###
+
+# Get processing statistics
+GET http://localhost:8080/stats
+Accept: application/json
