@@ -10,6 +10,8 @@ import (
 
 	"github.com/avast/retry-go/v4"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // KafkaStateCoordinator implements StateCoordinator using a compacted Kafka topic and local memory.
@@ -22,6 +24,7 @@ type KafkaStateCoordinator struct {
 	admin           Admin
 	logger          Logger
 	local           *LocalStateCoordinator
+	instruments     *coordinatorInstruments
 
 	errors          chan<- error
 	consumedOffsets map[int32]int64
@@ -42,6 +45,7 @@ func NewKafkaStateCoordinator(
 	consumerFactory ConsumerFactory,
 	admin Admin,
 	errCh chan<- error,
+	meter metric.Meter,
 ) *KafkaStateCoordinator {
 	k := &KafkaStateCoordinator{
 		local:           NewLocalStateCoordinator(),
@@ -51,6 +55,7 @@ func NewKafkaStateCoordinator(
 		cfg:             cfg,
 		logger:          logger,
 		errors:          errCh,
+		instruments:     newCoordinatorInstruments(resolveMeter(meter)),
 		instanceID:      uuid.New().String(),
 		consumedOffsets: make(map[int32]int64),
 	}
@@ -179,6 +184,10 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, originalTopic strin
 		return fmt.Errorf("failed to produce acquire message: %w", err)
 	}
 
+	k.instruments.lockAcquired.Add(ctx, 1,
+		metric.WithAttributes(attribute.String("topic", originalTopic)),
+	)
+
 	return nil
 }
 
@@ -244,6 +253,10 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 
 		return fmt.Errorf("failed to produce release message: %w", err)
 	}
+
+	k.instruments.lockReleased.Add(ctx, 1,
+		metric.WithAttributes(attribute.String("topic", topic)),
+	)
 
 	return nil
 }
@@ -440,6 +453,14 @@ func (k *KafkaStateCoordinator) ensureRedirectTopic(ctx context.Context, topic s
 // Uses an ephemeral consumer group that is deleted after restoration completes.
 // Times out if HWM is not reached within the configured window.
 func (k *KafkaStateCoordinator) restoreState(ctx context.Context, topic string) error {
+	start := time.Now()
+
+	defer func() {
+		k.instruments.stateRestoreDur.Record(ctx, time.Since(start).Seconds(),
+			metric.WithAttributes(attribute.String("topic", topic)),
+		)
+	}()
+
 	// get HWM for the redirect topic
 	metadata, err := k.admin.DescribeTopics(ctx, []string{k.redirectTopic(topic)})
 	if err != nil {

@@ -37,6 +37,7 @@ func TestIntegration_KafkaCoordinator(t *testing.T) {
 	coord := resilience.NewKafkaStateCoordinator(
 		cfg, sharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
 		make(chan error, 10),
+		nil,
 	)
 
 	// start Coordinator
@@ -152,6 +153,7 @@ func TestIntegration_KafkaCoordinator_ForeignLock(t *testing.T) {
 	coord := resilience.NewKafkaStateCoordinator(
 		cfg, sharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
 		make(chan error, 10),
+		nil,
 	)
 
 	err = coord.Start(ctx, topic)
@@ -234,6 +236,7 @@ func TestIntegration_KafkaCoordinator_Rebalance(t *testing.T) {
 		cfgA, sharedLogger.With("component", "InstanceA"),
 		adaptersA.Producer, adaptersA.ConsumerFactory, adaptersA.Admin,
 		make(chan error, 10),
+		nil,
 	)
 
 	// Start Instance A
@@ -272,6 +275,7 @@ func TestIntegration_KafkaCoordinator_Rebalance(t *testing.T) {
 		cfgB, sharedLogger.With("component", "InstanceB"),
 		adaptersB.Producer, adaptersB.ConsumerFactory, adaptersB.Admin,
 		make(chan error, 10),
+		nil,
 	)
 
 	// start Instance B
@@ -321,6 +325,7 @@ func TestIntegration_KafkaCoordinator_Synchronize(t *testing.T) {
 	coord := resilience.NewKafkaStateCoordinator(
 		cfg, sharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
 		make(chan error, 10),
+		nil,
 	)
 
 	// start Coordinator (creates topic)
@@ -393,6 +398,7 @@ func TestIntegration_RestartRestoration(t *testing.T) {
 		saramaadapter.NewConsumerFactory(client1),
 		admin1,
 		make(chan error, 10),
+		nil,
 	)
 
 	tracker1, err := resilience.NewErrorTracker(
@@ -400,6 +406,7 @@ func TestIntegration_RestartRestoration(t *testing.T) {
 		saramaadapter.NewProducerAdapter(producer1),
 		saramaadapter.NewConsumerFactory(client1),
 		admin1, coord1, resilience.NewExponentialBackoff(),
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -465,11 +472,13 @@ func TestIntegration_RestartRestoration(t *testing.T) {
 	coord2 := resilience.NewKafkaStateCoordinator(
 		cfg, sharedLogger, adapters2.Producer, adapters2.ConsumerFactory, adapters2.Admin,
 		make(chan error, 10),
+		nil,
 	)
 
 	tracker2, err := resilience.NewErrorTracker(
 		cfg, sharedLogger, adapters2.Producer, adapters2.ConsumerFactory, adapters2.Admin,
 		coord2, resilience.NewExponentialBackoff(),
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -517,10 +526,12 @@ func TestIntegration_TombstoneRestoration(t *testing.T) {
 	// create first tracker and start tracking
 	coord1 := resilience.NewKafkaStateCoordinator(
 		cfg, sharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin, make(chan error, 10),
+		nil,
 	)
 	tracker1, err := resilience.NewErrorTracker(
 		cfg, sharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
 		coord1, resilience.NewExponentialBackoff(),
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -553,10 +564,12 @@ func TestIntegration_TombstoneRestoration(t *testing.T) {
 	// create second tracker and restore state
 	coord2 := resilience.NewKafkaStateCoordinator(
 		cfg, sharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin, make(chan error, 10),
+		nil,
 	)
 	tracker2, err := resilience.NewErrorTracker(
 		cfg, sharedLogger, adapters.Producer, adapters.ConsumerFactory, adapters.Admin,
 		coord2, resilience.NewExponentialBackoff(),
+		nil,
 	)
 	require.NoError(t, err)
 

@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/avast/retry-go/v4"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -25,6 +27,7 @@ type ErrorTracker struct {
 	producer        Producer
 	consumerFactory ConsumerFactory
 	admin           Admin
+	instruments     *trackerInstruments
 
 	startedTopics map[string]struct{}
 
@@ -44,6 +47,7 @@ func NewErrorTracker(
 	admin Admin,
 	coordinator StateCoordinator,
 	backoff BackoffStrategy,
+	meter metric.Meter,
 ) (*ErrorTracker, error) {
 	if cfg == nil {
 		return nil, errors.New("config cannot be nil")
@@ -85,6 +89,7 @@ func NewErrorTracker(
 		admin:           admin,
 		coordinator:     coordinator,
 		backoff:         backoff,
+		instruments:     newTrackerInstruments(resolveMeter(meter)),
 		startedTopics:   make(map[string]struct{}),
 		cancels:         make(map[string]context.CancelFunc),
 	}
@@ -419,7 +424,16 @@ func (t *ErrorTracker) Redirect(ctx context.Context, msg Message, lastError erro
 // Never call this for main topic messages (they don't hold locks).
 func (t *ErrorTracker) Free(ctx context.Context, msg Message) error {
 	internalMsg := NewFromMessage(msg)
-	return t.coordinator.Release(ctx, internalMsg)
+
+	if err := t.coordinator.Release(ctx, internalMsg); err != nil {
+		return err
+	}
+
+	t.instruments.retryProcessed.Add(ctx, 1,
+		metric.WithAttributes(attribute.String("topic", internalMsg.Topic())),
+	)
+
+	return nil
 }
 
 // redirectMessageWithError is the internal redirect implementation using InternalMessage.
@@ -526,6 +540,13 @@ func (t *ErrorTracker) redirectMessageWithError(ctx context.Context, msg *Intern
 
 		return fmt.Errorf("failed to publish to retry topic (topic=%s, key=%s): %w", originalTopic, key, err)
 	}
+
+	t.instruments.retryRedirected.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("topic", originalTopic),
+			attribute.Int("attempt", nextAttempt),
+		),
+	)
 
 	return nil
 }
@@ -636,7 +657,18 @@ func (t *ErrorTracker) SendToDLQ(ctx context.Context, msg Message, lastError err
 		"error", lastError,
 	)
 
-	return t.producer.Produce(ctx, dlqMsg.Topic(), dlqMsg)
+	if err := t.producer.Produce(ctx, dlqMsg.Topic(), dlqMsg); err != nil {
+		return err
+	}
+
+	t.instruments.dlqEnqueued.Add(ctx, 1,
+		metric.WithAttributes(
+			attribute.String("topic", originalTopic),
+			attribute.String("reason", lastError.Error()),
+		),
+	)
+
+	return nil
 }
 
 // RetryTopic returns the retry topic name for a given primary topic.
@@ -750,6 +782,10 @@ func (t *ErrorTracker) WaitForRetryTime(ctx context.Context, msg Message) error 
 	case <-timer.C:
 		t.logger.Debug("delay complete, processing message",
 			"topic", msg.Topic(),
+		)
+
+		t.instruments.backoffWait.Record(ctx, delay.Seconds(),
+			metric.WithAttributes(attribute.String("topic", msg.Topic())),
 		)
 
 		return nil

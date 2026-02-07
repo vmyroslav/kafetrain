@@ -38,6 +38,7 @@ func TestKafkaStateCoordinator_Acquire(t *testing.T) {
 		mockFactory,
 		mockAdmin,
 		make(chan error, 1),
+		nil,
 	)
 
 	ctx := t.Context()
@@ -91,6 +92,7 @@ func TestKafkaStateCoordinator_Release(t *testing.T) {
 		&ConsumerFactoryMock{},
 		&AdminMock{},
 		make(chan error, 1),
+		nil,
 	)
 
 	ctx := t.Context()
@@ -194,6 +196,7 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 		mockFactory,
 		mockAdmin,
 		make(chan error, 1),
+		nil,
 	)
 
 	err := coordinator.Start(t.Context(), "orders")
@@ -226,6 +229,7 @@ func TestKafkaStateCoordinator_Acquire_ProducerError(t *testing.T) {
 		&ConsumerFactoryMock{},
 		&AdminMock{},
 		make(chan error),
+		nil,
 	)
 
 	err := coordinator.Acquire(t.Context(), "t", &InternalMessage{topic: "t", KeyData: []byte("k"), HeaderData: &HeaderList{}})
@@ -244,6 +248,7 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 		&ProducerMock{},
 		&ConsumerFactoryMock{},
 		&AdminMock{},
+		nil,
 		nil,
 	)
 
@@ -295,6 +300,7 @@ func TestKafkaStateCoordinator_ForeignTombstone(t *testing.T) {
 		&ProducerMock{},
 		&ConsumerFactoryMock{},
 		&AdminMock{},
+		nil,
 		nil,
 	)
 
@@ -400,6 +406,7 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 		mockFactory,
 		mockAdmin,
 		make(chan error, 1),
+		nil,
 	)
 
 	// start Instance B
@@ -420,6 +427,7 @@ func TestKafkaStateCoordinator_Synchronize_TopicNotStarted(t *testing.T) {
 		&ProducerMock{},
 		&ConsumerFactoryMock{},
 		&AdminMock{},
+		nil,
 		nil,
 	)
 
@@ -448,6 +456,7 @@ func TestKafkaStateCoordinator_Synchronize_EmptyRedirectTopic(t *testing.T) {
 		&ProducerMock{},
 		&ConsumerFactoryMock{},
 		mockAdmin,
+		nil,
 		nil,
 	)
 
@@ -480,6 +489,7 @@ func TestKafkaStateCoordinator_Synchronize_AlreadyCaughtUp(t *testing.T) {
 		&ProducerMock{},
 		&ConsumerFactoryMock{},
 		mockAdmin,
+		nil,
 		nil,
 	)
 
@@ -516,6 +526,7 @@ func TestKafkaStateCoordinator_Synchronize_BlocksUntilCaughtUp(t *testing.T) {
 		&ProducerMock{},
 		&ConsumerFactoryMock{},
 		mockAdmin,
+		nil,
 		nil,
 	)
 
@@ -577,6 +588,7 @@ func TestKafkaStateCoordinator_Synchronize_ContextCancellation(t *testing.T) {
 		&ProducerMock{},
 		&ConsumerFactoryMock{},
 		mockAdmin,
+		nil,
 		nil,
 	)
 

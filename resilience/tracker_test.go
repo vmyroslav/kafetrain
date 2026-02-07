@@ -61,6 +61,7 @@ func TestErrorTracker_Redirect_Rollback(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -129,6 +130,7 @@ func TestErrorTracker_Redirect_RollbackFailure_LogsCriticalError(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -192,6 +194,7 @@ func TestErrorTracker_Redirect_RollbackSuccess_KeyNotLocked(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -249,6 +252,7 @@ func TestErrorTracker_NotRetriableError_GoesDirectlyToDLQ(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -315,6 +319,7 @@ func TestErrorTracker_Close_WithTimeout(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -353,6 +358,7 @@ func TestErrorTracker_Close_TimeoutReturnsError(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -395,6 +401,7 @@ func TestErrorTracker_Redirect_HappyPath(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -444,6 +451,7 @@ func TestErrorTracker_Redirect_AlreadyInRetry_SkipsLockAcquisition(t *testing.T)
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -505,6 +513,7 @@ func TestErrorTracker_Redirect_IncrementsAttemptCounter(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -575,6 +584,7 @@ func TestErrorTracker_Redirect_PreservesUserHeaders(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -650,6 +660,7 @@ func TestErrorTracker_Redirect_PreservesOriginalTopic(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -706,6 +717,7 @@ func TestErrorTracker_Redirect_AcquireFailure_ReturnsError(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -757,6 +769,7 @@ func TestErrorTracker_Redirect_SetsRetryMetadataHeaders(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -826,6 +839,7 @@ func TestErrorTracker_Free_HappyPath(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -863,6 +877,7 @@ func TestErrorTracker_Free_CoordinatorFailure_ReturnsError(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -899,6 +914,7 @@ func TestErrorTracker_Free_WithMissingHeaders_StillCallsRelease(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -945,6 +961,7 @@ func TestErrorTracker_SendToDLQ_HappyPath(t *testing.T) {
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1000,6 +1017,7 @@ func TestErrorTracker_SendToDLQ_PreservesOriginalTopicFromHeader(t *testing.T) {
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1041,6 +1059,7 @@ func TestErrorTracker_SendToDLQ_IncludesRetryAttemptCount(t *testing.T) {
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1082,6 +1101,7 @@ func TestErrorTracker_SendToDLQ_ProducerFailure_ReturnsError(t *testing.T) {
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1131,6 +1151,7 @@ func TestErrorTracker_MaxRetriesExceeded_SendsToDLQ(t *testing.T) {
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1186,6 +1207,7 @@ func TestErrorTracker_MaxRetriesExceeded_FreeOnDLQ_True_ReleasesLock(t *testing.
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1237,6 +1259,7 @@ func TestErrorTracker_MaxRetriesExceeded_FreeOnDLQ_False_KeepsLock(t *testing.T)
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1272,6 +1295,7 @@ func TestErrorTracker_WaitForRetryTime_NoHeader_ReturnsImmediately(t *testing.T)
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1302,6 +1326,7 @@ func TestErrorTracker_WaitForRetryTime_PastTime_ReturnsImmediately(t *testing.T)
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1338,6 +1363,7 @@ func TestErrorTracker_WaitForRetryTime_FutureTime_Waits(t *testing.T) {
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1375,6 +1401,7 @@ func TestErrorTracker_WaitForRetryTime_ContextCancellation_ReturnsError(t *testi
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1421,6 +1448,7 @@ func TestErrorTracker_WaitForRetryTime_CorruptedTimestamp_ReturnsImmediately(t *
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1464,6 +1492,7 @@ func TestErrorTracker_ensureTopicsExist_AutoCreationDisabled_MissingTopics_Retur
 		mockAdmin,
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1498,6 +1527,7 @@ func TestErrorTracker_ensureTopicsExist_AutoCreationDisabled_TopicsExist_NoError
 		mockAdmin,
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1546,6 +1576,7 @@ func TestErrorTracker_ensureTopicsExist_AutoCreation_CreatesTopics(t *testing.T)
 		mockAdmin,
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1591,6 +1622,7 @@ func TestErrorTracker_ensureTopicsExist_UsesConfiguredPartitions(t *testing.T) {
 		mockAdmin,
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1649,6 +1681,7 @@ func TestErrorTracker_NewResilientHandler_KeyInRetryChain_AutoRedirects(t *testi
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1699,6 +1732,7 @@ func TestErrorTracker_NewResilientHandler_Success_NoLockManagement(t *testing.T)
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1756,6 +1790,7 @@ func TestErrorTracker_NewResilientHandler_Failure_StartsRetryChain(t *testing.T)
 		&AdminMock{},
 		mockCoordinator,
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 
@@ -1792,6 +1827,7 @@ func TestNewErrorTracker_NilConfig_ReturnsError(t *testing.T) {
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 
 	require.Error(t, err)
@@ -1809,6 +1845,7 @@ func TestNewErrorTracker_NilLogger_ReturnsError(t *testing.T) {
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 
 	require.Error(t, err)
@@ -1826,6 +1863,7 @@ func TestNewErrorTracker_NilProducer_ReturnsError(t *testing.T) {
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 
 	require.Error(t, err)
@@ -1843,6 +1881,7 @@ func TestNewErrorTracker_NilConsumerFactory_ReturnsError(t *testing.T) {
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 
 	require.Error(t, err)
@@ -1860,6 +1899,7 @@ func TestNewErrorTracker_NilAdmin_ReturnsError(t *testing.T) {
 		nil, // nil admin
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 
 	require.Error(t, err)
@@ -1877,6 +1917,7 @@ func TestNewErrorTracker_NilCoordinator_ReturnsError(t *testing.T) {
 		&AdminMock{},
 		nil, // nil coordinator
 		&mockBackoff{},
+		nil,
 	)
 
 	require.Error(t, err)
@@ -1894,6 +1935,7 @@ func TestNewErrorTracker_NilBackoff_ReturnsError(t *testing.T) {
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		nil, // nil backoff
+		nil,
 	)
 
 	require.Error(t, err)
@@ -1912,6 +1954,7 @@ func TestNewErrorTracker_InvalidConfig_ReturnsError(t *testing.T) {
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 
 	require.Error(t, err)
@@ -1934,6 +1977,7 @@ func TestErrorTracker_TopicNames(t *testing.T) {
 		&AdminMock{},
 		&StateCoordinatorMock{},
 		&mockBackoff{},
+		nil,
 	)
 	require.NoError(t, err)
 

@@ -3,6 +3,8 @@ package sarama
 import (
 	"github.com/IBM/sarama"
 	"github.com/vmyroslav/kafka-resilience/resilience"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/metric/noop"
 )
 
 type managerOptions struct {
@@ -10,6 +12,7 @@ type managerOptions struct {
 	coordinator resilience.StateCoordinator
 	backoff     resilience.BackoffStrategy
 	errCh       chan<- error
+	meter       metric.Meter
 }
 
 // NewResilienceTracker creates a configured ErrorTracker using the Sarama client.
@@ -44,6 +47,7 @@ func NewResilienceTracker(cfg *resilience.Config, client sarama.Client, opts ...
 			consumerFactory,
 			adminAdapter,
 			options.errCh,
+			options.meter,
 		)
 	}
 
@@ -60,6 +64,7 @@ func NewResilienceTracker(cfg *resilience.Config, client sarama.Client, opts ...
 		adminAdapter,
 		coordinator,
 		backoff,
+		options.meter,
 	)
 }
 
@@ -91,5 +96,20 @@ func WithBackoff(backoff resilience.BackoffStrategy) ManagerOption {
 func WithErrorChannel(errCh chan<- error) ManagerOption {
 	return func(o *managerOptions) {
 		o.errCh = errCh
+	}
+}
+
+// WithMeter sets the OpenTelemetry meter for metrics instrumentation.
+// If not set, the global meter provider is used (which is a no-op if no OTel SDK is registered).
+func WithMeter(meter metric.Meter) ManagerOption {
+	return func(o *managerOptions) {
+		o.meter = meter
+	}
+}
+
+// WithNoMetrics explicitly disables metrics, even if a global OTel SDK is registered.
+func WithNoMetrics() ManagerOption {
+	return func(o *managerOptions) {
+		o.meter = noop.Meter{}
 	}
 }
