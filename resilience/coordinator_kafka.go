@@ -15,7 +15,7 @@ import (
 )
 
 // KafkaStateCoordinator implements StateCoordinator using a compacted Kafka topic and local memory.
-// It decorates LocalStateCoordinator to add distributed synchronization.
+// It decorates localStateCoordinator to add distributed synchronization.
 type KafkaStateCoordinator struct {
 	cfg *Config
 
@@ -23,7 +23,7 @@ type KafkaStateCoordinator struct {
 	consumerFactory ConsumerFactory
 	admin           Admin
 	logger          Logger
-	local           *LocalStateCoordinator
+	local           *localStateCoordinator
 	instruments     *coordinatorInstruments
 
 	errors          chan<- error
@@ -48,7 +48,7 @@ func NewKafkaStateCoordinator(
 	meter metric.Meter,
 ) *KafkaStateCoordinator {
 	k := &KafkaStateCoordinator{
-		local:           NewLocalStateCoordinator(),
+		local:           newLocalStateCoordinator(),
 		producer:        producer,
 		consumerFactory: consumerFactory,
 		admin:           admin,
@@ -65,7 +65,7 @@ func NewKafkaStateCoordinator(
 }
 
 // IsLocked checks if a message's key is currently locked in the local state.
-// This method delegates to the underlying LocalStateCoordinator for fast, thread-safe lock check.
+// This method delegates to the underlying localStateCoordinator for fast, thread-safe lock check.
 func (k *KafkaStateCoordinator) IsLocked(ctx context.Context, msg *InternalMessage) bool {
 	return k.local.IsLocked(ctx, msg)
 }
@@ -559,7 +559,7 @@ func (k *KafkaStateCoordinator) startRedirectConsumer(ctx context.Context, topic
 		backoff := 5 * time.Second
 
 		for {
-			err := consumer.Consume(ctx, []string{k.redirectTopic(topic)}, &RedirectHandler{k: k})
+			err := consumer.Consume(ctx, []string{k.redirectTopic(topic)}, &redirectHandler{k: k})
 
 			// check for clean shutdown
 			if errors.Is(ctx.Err(), context.Canceled) {
@@ -682,16 +682,16 @@ func (r *redirectFillHandler) Handle(ctx context.Context, msg Message) error {
 	return nil
 }
 
-// RedirectHandler is the ongoing background consumer handler for the redirect topic.
+// redirectHandler is the ongoing background consumer handler for the redirect topic.
 // It keeps the coordinator's local state synchronized with other instances by
 // processing lock acquisitions and releases from the distributed compacted topic.
-type RedirectHandler struct {
+type redirectHandler struct {
 	k *KafkaStateCoordinator
 }
 
 // Handle processes a redirect message during normal operation and updates local state.
 // It broadcasts offset updates to wake any goroutines waiting in Synchronize().
-func (r *RedirectHandler) Handle(ctx context.Context, msg Message) error {
+func (r *redirectHandler) Handle(ctx context.Context, msg Message) error {
 	if err := r.k.processRedirectMessage(ctx, msg); err != nil {
 		return err
 	}

@@ -5,27 +5,27 @@ import (
 	"sync"
 )
 
-// LocalStateCoordinator implements StateCoordinator for local in-memory locking.
+// localStateCoordinator implements StateCoordinator for local in-memory locking.
 // It manages reference counting for keys to ensure strict ordering within a single process.
-type LocalStateCoordinator struct {
+type localStateCoordinator struct {
 	lm lockMap
 	mu sync.RWMutex
 }
 
-// NewLocalStateCoordinator creates a new LocalStateCoordinator.
-func NewLocalStateCoordinator() *LocalStateCoordinator {
-	return &LocalStateCoordinator{
+// newLocalStateCoordinator creates a new localStateCoordinator.
+func newLocalStateCoordinator() *localStateCoordinator {
+	return &localStateCoordinator{
 		lm: make(lockMap),
 	}
 }
 
-// Start is a no-op for LocalStateCoordinator as it requires no background processes.
-func (l *LocalStateCoordinator) Start(_ context.Context, _ string) error {
+// Start is a no-op for localStateCoordinator as it requires no background processes.
+func (l *localStateCoordinator) Start(_ context.Context, _ string) error {
 	return nil
 }
 
 // Acquire locks the key in local memory.
-func (l *LocalStateCoordinator) Acquire(_ context.Context, originalTopic string, msg *InternalMessage) error {
+func (l *localStateCoordinator) Acquire(_ context.Context, originalTopic string, msg *InternalMessage) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -36,7 +36,7 @@ func (l *LocalStateCoordinator) Acquire(_ context.Context, originalTopic string,
 }
 
 // Release unlocks the key in local memory.
-func (l *LocalStateCoordinator) Release(_ context.Context, msg *InternalMessage) error {
+func (l *localStateCoordinator) Release(_ context.Context, msg *InternalMessage) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -64,7 +64,7 @@ func (l *LocalStateCoordinator) Release(_ context.Context, msg *InternalMessage)
 }
 
 // IsLocked checks if the key is currently locked in local memory.
-func (l *LocalStateCoordinator) IsLocked(_ context.Context, msg *InternalMessage) bool {
+func (l *localStateCoordinator) IsLocked(_ context.Context, msg *InternalMessage) bool {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
@@ -73,13 +73,13 @@ func (l *LocalStateCoordinator) IsLocked(_ context.Context, msg *InternalMessage
 	return exists && count > 0
 }
 
-// Synchronize is a no-op for LocalStateCoordinator.
-func (l *LocalStateCoordinator) Synchronize(_ context.Context) error {
+// Synchronize is a no-op for localStateCoordinator.
+func (l *localStateCoordinator) Synchronize(_ context.Context) error {
 	return nil
 }
 
-// Close is a no-op for LocalStateCoordinator (no background workers to stop).
-func (l *LocalStateCoordinator) Close(_ context.Context) error {
+// Close is a no-op for localStateCoordinator (no background workers to stop).
+func (l *localStateCoordinator) Close(_ context.Context) error {
 	return nil
 }
 

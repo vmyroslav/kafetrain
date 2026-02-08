@@ -13,7 +13,7 @@ const testTopicChaos = "chaos-topic"
 func TestLocalStateCoordinator_Acquire(t *testing.T) {
 	t.Parallel()
 
-	coordinator := NewLocalStateCoordinator()
+	coordinator := newLocalStateCoordinator()
 	ctx := t.Context()
 
 	msg := &InternalMessage{
@@ -31,7 +31,7 @@ func TestLocalStateCoordinator_Acquire(t *testing.T) {
 func TestLocalStateCoordinator_Release(t *testing.T) {
 	t.Parallel()
 
-	coordinator := NewLocalStateCoordinator()
+	coordinator := newLocalStateCoordinator()
 	ctx := t.Context()
 
 	msg := &InternalMessage{
@@ -54,7 +54,7 @@ func TestLocalStateCoordinator_Release(t *testing.T) {
 func TestLocalStateCoordinator_ReferenceCounting(t *testing.T) {
 	t.Parallel()
 
-	coordinator := NewLocalStateCoordinator()
+	coordinator := newLocalStateCoordinator()
 	ctx := t.Context()
 
 	topic := testTopicOrders
@@ -100,7 +100,7 @@ func TestLocalStateCoordinator_ReferenceCounting(t *testing.T) {
 func TestLocalStateCoordinator_Isolation(t *testing.T) {
 	t.Parallel()
 
-	coordinator := NewLocalStateCoordinator()
+	coordinator := newLocalStateCoordinator()
 	ctx := t.Context()
 
 	// lock key A
@@ -122,7 +122,7 @@ func TestLocalStateCoordinator_Isolation(t *testing.T) {
 func TestLocalStateCoordinator_Release_WithHeader(t *testing.T) {
 	t.Parallel()
 
-	coordinator := NewLocalStateCoordinator()
+	coordinator := newLocalStateCoordinator()
 	ctx := t.Context()
 
 	// acquire on "orders"
@@ -148,7 +148,7 @@ func TestLocalStateCoordinator_ConcurrentAccess(t *testing.T) {
 
 	var (
 		ctx         = t.Context()
-		coordinator = NewLocalStateCoordinator()
+		coordinator = newLocalStateCoordinator()
 		topic       = "concurrent-topic"
 		key         = "concurrent-key"
 		msg         = &InternalMessage{topic: topic, key: []byte(key), headerData: &HeaderList{}}
@@ -188,7 +188,7 @@ func TestLocalStateCoordinator_ConcurrentAccess(t *testing.T) {
 func TestLocalStateCoordinator_Chaos(t *testing.T) {
 	t.Parallel()
 
-	coordinator := NewLocalStateCoordinator()
+	coordinator := newLocalStateCoordinator()
 	ctx := t.Context()
 
 	numGoroutines := 50
