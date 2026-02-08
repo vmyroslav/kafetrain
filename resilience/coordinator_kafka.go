@@ -106,19 +106,19 @@ func (k *KafkaStateCoordinator) Start(ctx context.Context, topic string) error {
 // It uses optimistic locking: updates local state immediately, then publishes to the redirect topic.
 // On publish failure, local state is rolled back and error returned.
 func (k *KafkaStateCoordinator) Acquire(ctx context.Context, originalTopic string, msg *InternalMessage) error {
-	id, ok := GetHeaderValue[string](msg.HeaderData, HeaderID)
+	id, ok := GetHeaderValue[string](msg.headerData, HeaderID)
 	if !ok {
 		// if no ID is provided (e.g., first failure), generate a unique one.
 		// we MUST persist this to the message headers so that:
 		// 1. the Retry Topic receives this ID.
 		// 2. subsequent Release() calls use the same ID.
 		id = uuid.New().String()
-		_ = SetHeader(msg.HeaderData, HeaderID, id)
+		_ = SetHeader(msg.headerData, HeaderID, id)
 	}
 
 	// Persist original topic to message headers for Release() to use
-	if _, ok := GetHeaderValue[string](msg.HeaderData, HeaderTopic); !ok {
-		_ = SetHeader(msg.HeaderData, HeaderTopic, originalTopic)
+	if _, ok := GetHeaderValue[string](msg.headerData, HeaderTopic); !ok {
+		_ = SetHeader(msg.headerData, HeaderTopic, originalTopic)
 	}
 
 	// optimistic locking: update local state immediately
@@ -128,9 +128,9 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, originalTopic strin
 
 	// use a clone of the original headers to ensure we preserve any metadata
 	// while adding coordinator-specific headers.
-	redirectHeaders, _ := msg.HeaderData.Clone().(*HeaderList)
+	redirectHeaders, _ := msg.headerData.Clone().(*HeaderList)
 	redirectHeaders.Set(HeaderTopic, []byte(originalTopic))
-	redirectHeaders.Set(HeaderKey, msg.KeyData)
+	redirectHeaders.Set(HeaderKey, msg.key)
 	redirectHeaders.Set(HeaderCoordinatorID, []byte(k.instanceID))
 
 	// IMPORTANT: We use a unique UUID as the Kafka message key (not the original message key).
@@ -148,13 +148,13 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, originalTopic strin
 	//   - Main topic unblocks only after ALL 4 retries complete (refcount=0)
 	//
 	// The original key is preserved in HeaderKey for local lock management.
-	// Payload value is non-nil to distinguish from tombstone (nil = release).
+	// payload value is non-nil to distinguish from tombstone (nil = release).
 	redirectMsg := &InternalMessage{
-		topic:         k.redirectTopic(originalTopic),
-		KeyData:       []byte(id),
-		Payload:       []byte(id),
-		HeaderData:    redirectHeaders,
-		TimestampData: time.Now(),
+		topic:      k.redirectTopic(originalTopic),
+		key:        []byte(id),
+		payload:    []byte(id),
+		headerData: redirectHeaders,
+		timestamp:  time.Now(),
 	}
 
 	err := retry.Do(
@@ -196,12 +196,12 @@ func (k *KafkaStateCoordinator) Acquire(ctx context.Context, originalTopic strin
 // which signals all coordinators to remove the lock.
 // Uses optimistic locking with rollback on failure, similar to Acquire.
 func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessage) error {
-	id, ok := GetHeaderValue[string](msg.HeaderData, HeaderID)
+	id, ok := GetHeaderValue[string](msg.headerData, HeaderID)
 	if !ok {
 		return errors.New("HeaderID is required for Release: message was not properly acquired")
 	}
 
-	topic, ok := GetHeaderValue[string](msg.HeaderData, HeaderTopic)
+	topic, ok := GetHeaderValue[string](msg.headerData, HeaderTopic)
 	if !ok {
 		return errors.New("HeaderTopic is required for Release: message was not properly acquired")
 	}
@@ -212,19 +212,19 @@ func (k *KafkaStateCoordinator) Release(ctx context.Context, msg *InternalMessag
 	}
 
 	// use a clone of the original headers to ensure we preserve metadata (like HeaderID)
-	tombstoneHeaders, _ := msg.HeaderData.Clone().(*HeaderList)
+	tombstoneHeaders, _ := msg.headerData.Clone().(*HeaderList)
 	tombstoneHeaders.Set(HeaderTopic, []byte(topic))
-	tombstoneHeaders.Set(HeaderKey, msg.KeyData)
+	tombstoneHeaders.Set(HeaderKey, msg.key)
 	tombstoneHeaders.Set(HeaderCoordinatorID, []byte(k.instanceID))
 
 	tombstoneHeaders.Set(HeaderID, []byte(id))
 
 	tombstoneMsg := &InternalMessage{
-		topic:         k.redirectTopic(topic),
-		KeyData:       []byte(id),
-		Payload:       nil, // tombstone
-		HeaderData:    tombstoneHeaders,
-		TimestampData: time.Now(),
+		topic:      k.redirectTopic(topic),
+		key:        []byte(id),
+		payload:    nil, // tombstone
+		headerData: tombstoneHeaders,
+		timestamp:  time.Now(),
 	}
 
 	err := retry.Do(
@@ -620,8 +620,8 @@ func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg 
 
 	originalMsg := &InternalMessage{
 		topic:      string(originalTopicBytes),
-		KeyData:    originalKeyBytes,
-		HeaderData: &HeaderList{},
+		key:        originalKeyBytes,
+		headerData: &HeaderList{},
 	}
 
 	// delegate to local coordinator
@@ -633,11 +633,11 @@ func (k *KafkaStateCoordinator) processRedirectMessage(ctx context.Context, msg 
 // ensuring all coordinators maintain consistent lock state. Requires topic and
 // key headers to identify the lock to release.
 func (k *KafkaStateCoordinator) releaseMessage(ctx context.Context, msg *InternalMessage) error {
-	if _, ok := GetHeaderValue[string](msg.HeaderData, HeaderTopic); !ok {
+	if _, ok := GetHeaderValue[string](msg.headerData, HeaderTopic); !ok {
 		return errors.New("topic header not found")
 	}
 
-	if _, ok := GetHeaderValue[string](msg.HeaderData, HeaderKey); !ok {
+	if _, ok := GetHeaderValue[string](msg.headerData, HeaderKey); !ok {
 		return errors.New("key header not found")
 	}
 

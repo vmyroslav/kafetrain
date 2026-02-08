@@ -44,10 +44,10 @@ func TestKafkaStateCoordinator_Acquire(t *testing.T) {
 	ctx := t.Context()
 	msg := &InternalMessage{
 		topic:      "orders",
-		KeyData:    []byte("order-123"),
-		HeaderData: &HeaderList{},
+		key:        []byte("order-123"),
+		headerData: &HeaderList{},
 	}
-	msg.HeaderData.Set("custom", []byte("val"))
+	msg.headerData.Set("custom", []byte("val"))
 
 	err := coordinator.Acquire(ctx, "orders", msg)
 	require.NoError(t, err)
@@ -98,8 +98,8 @@ func TestKafkaStateCoordinator_Release(t *testing.T) {
 	ctx := t.Context()
 	msg := &InternalMessage{
 		topic:      "orders",
-		KeyData:    []byte("order-123"),
-		HeaderData: &HeaderList{},
+		key:        []byte("order-123"),
+		headerData: &HeaderList{},
 	}
 
 	// Acquire first (sets up required headers: HeaderID, HeaderTopic)
@@ -149,12 +149,12 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 			// NO CoordinatorID header -> simulates legacy message or other instance
 			msg := &InternalMessage{
 				topic:      "redirect_orders",
-				KeyData:    []byte("order-locked"),
-				Payload:    []byte("order-locked"),
-				HeaderData: &HeaderList{},
+				key:        []byte("order-locked"),
+				payload:    []byte("order-locked"),
+				headerData: &HeaderList{},
 			}
-			msg.HeaderData.Set("topic", []byte("orders"))
-			msg.HeaderData.Set("key", []byte("order-locked"))
+			msg.headerData.Set("topic", []byte("orders"))
+			msg.headerData.Set("key", []byte("order-locked"))
 
 			msg.SetPartition(0)
 			msg.SetOffset(9) // last offset (target is 10)
@@ -205,8 +205,8 @@ func TestKafkaStateCoordinator_Start_RestoresState(t *testing.T) {
 	// verify state was restored
 	msg := &InternalMessage{
 		topic:      "orders",
-		KeyData:    []byte("order-locked"),
-		HeaderData: &HeaderList{},
+		key:        []byte("order-locked"),
+		headerData: &HeaderList{},
 	}
 	assert.True(t, coordinator.IsLocked(t.Context(), msg))
 }
@@ -232,12 +232,12 @@ func TestKafkaStateCoordinator_Acquire_ProducerError(t *testing.T) {
 		nil,
 	)
 
-	err := coordinator.Acquire(t.Context(), "t", &InternalMessage{topic: "t", KeyData: []byte("k"), HeaderData: &HeaderList{}})
+	err := coordinator.Acquire(t.Context(), "t", &InternalMessage{topic: "t", key: []byte("k"), headerData: &HeaderList{}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "kafka error")
 
 	// verify rollback: should NOT be locked
-	msg := &InternalMessage{topic: "t", KeyData: []byte("k"), HeaderData: &HeaderList{}}
+	msg := &InternalMessage{topic: "t", key: []byte("k"), headerData: &HeaderList{}}
 	assert.False(t, coordinator.IsLocked(t.Context(), msg))
 }
 
@@ -255,16 +255,16 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 	// simulate "Echo" message (Same ID)
 	echoMsg := &InternalMessage{
 		topic:      "redirect_orders",
-		KeyData:    []byte("k1"),
-		Payload:    []byte("k1"),
-		HeaderData: &HeaderList{},
+		key:        []byte("k1"),
+		payload:    []byte("k1"),
+		headerData: &HeaderList{},
 	}
-	echoMsg.HeaderData.Set(HeaderCoordinatorID, []byte(coordinator.instanceID))
-	echoMsg.HeaderData.Set(HeaderTopic, []byte("orders"))
-	echoMsg.HeaderData.Set("key", []byte("k1"))
+	echoMsg.headerData.Set(HeaderCoordinatorID, []byte(coordinator.instanceID))
+	echoMsg.headerData.Set(HeaderTopic, []byte("orders"))
+	echoMsg.headerData.Set("key", []byte("k1"))
 
 	// we call Acquire first to set local ref count to 1 (simulating the source of the echo)
-	_ = coordinator.local.Acquire(t.Context(), "orders", &InternalMessage{topic: "orders", KeyData: []byte("k1"), HeaderData: &HeaderList{}})
+	_ = coordinator.local.Acquire(t.Context(), "orders", &InternalMessage{topic: "orders", key: []byte("k1"), headerData: &HeaderList{}})
 
 	// process the echo message
 	err := coordinator.processRedirectMessage(t.Context(), echoMsg)
@@ -277,13 +277,13 @@ func TestKafkaStateCoordinator_ProcessRedirect_Filter(t *testing.T) {
 	// simulate "foreign" message (different ID)
 	foreignMsg := &InternalMessage{
 		topic:      "redirect_orders",
-		KeyData:    []byte("k1"),
-		Payload:    []byte("k1"),
-		HeaderData: &HeaderList{},
+		key:        []byte("k1"),
+		payload:    []byte("k1"),
+		headerData: &HeaderList{},
 	}
-	foreignMsg.HeaderData.Set(HeaderCoordinatorID, []byte("other-uuid"))
-	foreignMsg.HeaderData.Set(HeaderTopic, []byte("orders"))
-	foreignMsg.HeaderData.Set("key", []byte("k1"))
+	foreignMsg.headerData.Set(HeaderCoordinatorID, []byte("other-uuid"))
+	foreignMsg.headerData.Set(HeaderTopic, []byte("orders"))
+	foreignMsg.headerData.Set("key", []byte("k1"))
 
 	err = coordinator.processRedirectMessage(t.Context(), foreignMsg)
 	require.NoError(t, err)
@@ -305,8 +305,8 @@ func TestKafkaStateCoordinator_ForeignTombstone(t *testing.T) {
 	)
 
 	// simulate we have a lock locally (maybe restored or acquired)
-	_ = coordinator.local.Acquire(t.Context(), "orders", &InternalMessage{topic: "orders", KeyData: []byte("key1"), HeaderData: &HeaderList{}})
-	msg := &InternalMessage{topic: "orders", KeyData: []byte("key1"), HeaderData: &HeaderList{}}
+	_ = coordinator.local.Acquire(t.Context(), "orders", &InternalMessage{topic: "orders", key: []byte("key1"), headerData: &HeaderList{}})
+	msg := &InternalMessage{topic: "orders", key: []byte("key1"), headerData: &HeaderList{}}
 	assert.True(t, coordinator.IsLocked(t.Context(), msg))
 
 	// receive a Tombstone from a different coordinator (failover scenario)
@@ -352,14 +352,14 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 			// simulate the existing lock message on the topic
 			msg := &InternalMessage{
 				topic:      "redirect_orders",
-				KeyData:    []byte(key),
-				Payload:    []byte(key), // payload exists = Locked
-				HeaderData: &HeaderList{},
+				key:        []byte(key),
+				payload:    []byte(key), // payload exists = Locked
+				headerData: &HeaderList{},
 			}
-			msg.HeaderData.Set(HeaderTopic, []byte(topic))
-			msg.HeaderData.Set(HeaderKey, []byte(key))
+			msg.headerData.Set(HeaderTopic, []byte(topic))
+			msg.headerData.Set(HeaderKey, []byte(key))
 			// Note: Different coordinator ID, simulating Instance A
-			msg.HeaderData.Set(HeaderCoordinatorID, []byte("instance-A"))
+			msg.headerData.Set(HeaderCoordinatorID, []byte("instance-A"))
 
 			msg.SetPartition(0)
 			msg.SetOffset(4) // < HWM (5)
@@ -414,7 +414,7 @@ func TestKafkaStateCoordinator_Rebalance_Simulation(t *testing.T) {
 	require.NoError(t, err)
 
 	// verify Instance B has the lock
-	checkMsg := &InternalMessage{topic: topic, KeyData: []byte(key), HeaderData: &HeaderList{}}
+	checkMsg := &InternalMessage{topic: topic, key: []byte(key), headerData: &HeaderList{}}
 	assert.True(t, coordinator.IsLocked(t.Context(), checkMsg), "Instance B should have restored the lock")
 }
 
@@ -632,9 +632,9 @@ func createMockRedirectMsg(topic, key, coordinatorID string, isLock bool) *Inter
 
 	return &InternalMessage{
 		topic:      "redirect_" + topic,
-		KeyData:    []byte(key),
-		Payload:    value,
-		HeaderData: hl,
+		key:        []byte(key),
+		payload:    value,
+		headerData: hl,
 	}
 }
 

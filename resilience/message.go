@@ -77,28 +77,28 @@ type Headers interface {
 
 // InternalMessage is the internal message representation.
 type InternalMessage struct {
-	TimestampData time.Time
-	topic         string
-	KeyData       []byte
-	Payload       []byte
-	HeaderData    *HeaderList
-	partition     int32
-	offset        int64
+	timestamp  time.Time
+	topic      string
+	key        []byte
+	payload    []byte
+	headerData *HeaderList
+	partition  int32
+	offset     int64
 }
 
 func NewFromMessage(msg Message) *InternalMessage {
 	im := &InternalMessage{
-		topic:         msg.Topic(),
-		partition:     msg.Partition(),
-		offset:        msg.Offset(),
-		KeyData:       msg.Key(),
-		Payload:       msg.Value(),
-		TimestampData: msg.Timestamp(),
-		HeaderData:    &HeaderList{},
+		topic:      msg.Topic(),
+		partition:  msg.Partition(),
+		offset:     msg.Offset(),
+		key:        msg.Key(),
+		payload:    msg.Value(),
+		timestamp:  msg.Timestamp(),
+		headerData: &HeaderList{},
 	}
 
 	msg.Headers().Range(func(key string, value []byte) bool {
-		im.HeaderData.Set(key, value)
+		im.headerData.Set(key, value)
 		return true
 	})
 
@@ -137,26 +137,26 @@ func (m *InternalMessage) SetOffset(offset int64) {
 
 // Value returns the message payload.
 func (m *InternalMessage) Value() []byte {
-	return m.Payload
+	return m.payload
 }
 
 // Key returns the message key.
 func (m *InternalMessage) Key() []byte {
-	return m.KeyData
+	return m.key
 }
 
 // Timestamp returns the message timestamp.
 func (m *InternalMessage) Timestamp() time.Time {
-	return m.TimestampData
+	return m.timestamp
 }
 
-// Headers returns the message headers, initializing the HeaderData if nil.
+// Headers returns the message headers, initializing the headerData if nil.
 func (m *InternalMessage) Headers() Headers {
-	if m.HeaderData == nil {
-		m.HeaderData = &HeaderList{}
+	if m.headerData == nil {
+		m.headerData = &HeaderList{}
 	}
 
-	return m.HeaderData
+	return m.headerData
 }
 
 type Header struct {

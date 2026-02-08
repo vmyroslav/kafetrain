@@ -29,7 +29,7 @@ func (l *LocalStateCoordinator) Acquire(_ context.Context, originalTopic string,
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	key := string(msg.KeyData)
+	key := string(msg.key)
 	l.lm.incrementRef(originalTopic, key)
 
 	return nil
@@ -40,12 +40,12 @@ func (l *LocalStateCoordinator) Release(_ context.Context, msg *InternalMessage)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	topic, ok := GetHeaderValue[string](msg.HeaderData, HeaderTopic)
+	topic, ok := GetHeaderValue[string](msg.headerData, HeaderTopic)
 	if !ok {
 		topic = msg.topic
 	}
 
-	key := string(msg.KeyData)
+	key := string(msg.key)
 
 	newCount, exists := l.lm.decrementRef(topic, key)
 	if !exists {
@@ -68,7 +68,7 @@ func (l *LocalStateCoordinator) IsLocked(_ context.Context, msg *InternalMessage
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 
-	count, exists := l.lm.getRefCount(msg.topic, string(msg.KeyData))
+	count, exists := l.lm.getRefCount(msg.topic, string(msg.key))
 
 	return exists && count > 0
 }
